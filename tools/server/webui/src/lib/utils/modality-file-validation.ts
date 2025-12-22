@@ -3,7 +3,8 @@
  * Ensures only compatible file types are processed based on model capabilities
  */
 
-import { getFileTypeCategory } from '$lib/utils';
+import { getFileTypeCategory } from '$lib/utils/file-type';
+import { supportsVision, supportsAudio } from '$lib/stores/server.svelte';
 import {
 	FileExtensionAudio,
 	FileExtensionImage,
@@ -14,26 +15,15 @@ import {
 	MimeTypeApplication,
 	MimeTypeText,
 	FileTypeCategory
-} from '$lib/enums';
-
-/** Modality capabilities for file validation */
-export interface ModalityCapabilities {
-	hasVision: boolean;
-	hasAudio: boolean;
-}
+} from '$lib/enums/files';
 
 /**
- * Check if a file type is supported by the given modalities
+ * Check if a file type is supported by the current model's modalities
  * @param filename - The filename to check
  * @param mimeType - The MIME type of the file
- * @param capabilities - The modality capabilities to check against
- * @returns true if the file type is supported
+ * @returns true if the file type is supported by the current model
  */
-export function isFileTypeSupportedByModel(
-	filename: string,
-	mimeType: string | undefined,
-	capabilities: ModalityCapabilities
-): boolean {
+export function isFileTypeSupportedByModel(filename: string, mimeType?: string): boolean {
 	const category = mimeType ? getFileTypeCategory(mimeType) : null;
 
 	// If we can't determine the category from MIME type, fall back to general support check
@@ -54,11 +44,11 @@ export function isFileTypeSupportedByModel(
 
 		case FileTypeCategory.IMAGE:
 			// Images require vision support
-			return capabilities.hasVision;
+			return supportsVision();
 
 		case FileTypeCategory.AUDIO:
 			// Audio files require audio support
-			return capabilities.hasAudio;
+			return supportsAudio();
 
 		default:
 			// Unknown categories - be conservative and allow
@@ -69,13 +59,9 @@ export function isFileTypeSupportedByModel(
 /**
  * Filter files based on model modalities and return supported/unsupported lists
  * @param files - Array of files to filter
- * @param capabilities - The modality capabilities to check against
  * @returns Object with supportedFiles and unsupportedFiles arrays
  */
-export function filterFilesByModalities(
-	files: File[],
-	capabilities: ModalityCapabilities
-): {
+export function filterFilesByModalities(files: File[]): {
 	supportedFiles: File[];
 	unsupportedFiles: File[];
 	modalityReasons: Record<string, string>;
@@ -84,7 +70,8 @@ export function filterFilesByModalities(
 	const unsupportedFiles: File[] = [];
 	const modalityReasons: Record<string, string> = {};
 
-	const { hasVision, hasAudio } = capabilities;
+	const hasVision = supportsVision();
+	const hasAudio = supportsAudio();
 
 	for (const file of files) {
 		const category = getFileTypeCategory(file.type);
@@ -132,17 +119,16 @@ export function filterFilesByModalities(
  * Generate a user-friendly error message for unsupported files
  * @param unsupportedFiles - Array of unsupported files
  * @param modalityReasons - Reasons why files are unsupported
- * @param capabilities - The modality capabilities to check against
  * @returns Formatted error message
  */
 export function generateModalityErrorMessage(
 	unsupportedFiles: File[],
-	modalityReasons: Record<string, string>,
-	capabilities: ModalityCapabilities
+	modalityReasons: Record<string, string>
 ): string {
 	if (unsupportedFiles.length === 0) return '';
 
-	const { hasVision, hasAudio } = capabilities;
+	const hasVision = supportsVision();
+	const hasAudio = supportsAudio();
 
 	let message = '';
 
@@ -166,12 +152,12 @@ export function generateModalityErrorMessage(
 }
 
 /**
- * Generate file input accept string based on model modalities
- * @param capabilities - The modality capabilities to check against
+ * Generate file input accept string based on current model modalities
  * @returns Accept string for HTML file input element
  */
-export function generateModalityAwareAcceptString(capabilities: ModalityCapabilities): string {
-	const { hasVision, hasAudio } = capabilities;
+export function generateModalityAwareAcceptString(): string {
+	const hasVision = supportsVision();
+	const hasAudio = supportsAudio();
 
 	const acceptedExtensions: string[] = [];
 	const acceptedMimeTypes: string[] = [];

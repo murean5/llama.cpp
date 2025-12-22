@@ -1,10 +1,10 @@
 import { convertPDFToImage, convertPDFToText } from './pdf-processing';
 import { isSvgMimeType, svgBase64UrlToPngDataURL } from './svg-to-png';
 import { isWebpMimeType, webpBase64UrlToPngDataURL } from './webp-to-png';
-import { FileTypeCategory, AttachmentType } from '$lib/enums';
+import { FileTypeCategory } from '$lib/enums/files';
 import { config, settingsStore } from '$lib/stores/settings.svelte';
-import { modelsStore } from '$lib/stores/models.svelte';
-import { getFileTypeCategory } from '$lib/utils';
+import { supportsVision } from '$lib/stores/server.svelte';
+import { getFileTypeCategory } from '$lib/utils/file-type';
 import { readFileAsText, isLikelyTextFile } from './text-files';
 import { toast } from 'svelte-sonner';
 
@@ -31,8 +31,7 @@ export interface FileProcessingResult {
 }
 
 export async function parseFilesToMessageExtras(
-	files: ChatUploadedFile[],
-	activeModelId?: string
+	files: ChatUploadedFile[]
 ): Promise<FileProcessingResult> {
 	const extras: DatabaseMessageExtra[] = [];
 	const emptyFiles: string[] = [];
@@ -57,7 +56,7 @@ export async function parseFilesToMessageExtras(
 				}
 
 				extras.push({
-					type: AttachmentType.IMAGE,
+					type: 'imageFile',
 					name: file.name,
 					base64Url
 				});
@@ -68,7 +67,7 @@ export async function parseFilesToMessageExtras(
 				const base64Data = await readFileAsBase64(file.file);
 
 				extras.push({
-					type: AttachmentType.AUDIO,
+					type: 'audioFile',
 					name: file.name,
 					base64Data: base64Data,
 					mimeType: file.type
@@ -81,10 +80,7 @@ export async function parseFilesToMessageExtras(
 				// Always get base64 data for preview functionality
 				const base64Data = await readFileAsBase64(file.file);
 				const currentConfig = config();
-				// Use per-model vision check for router mode
-				const hasVisionSupport = activeModelId
-					? modelsStore.modelSupportsVision(activeModelId)
-					: false;
+				const hasVisionSupport = supportsVision();
 
 				// Force PDF-to-text for non-vision models
 				let shouldProcessAsImages = Boolean(currentConfig.pdfAsImage) && hasVisionSupport;
@@ -121,7 +117,7 @@ export async function parseFilesToMessageExtras(
 						);
 
 						extras.push({
-							type: AttachmentType.PDF,
+							type: 'pdfFile',
 							name: file.name,
 							content: `PDF file with ${images.length} pages`,
 							images: images,
@@ -138,7 +134,7 @@ export async function parseFilesToMessageExtras(
 						const content = await convertPDFToText(file.file);
 
 						extras.push({
-							type: AttachmentType.PDF,
+							type: 'pdfFile',
 							name: file.name,
 							content: content,
 							processedAsImages: false,
@@ -155,7 +151,7 @@ export async function parseFilesToMessageExtras(
 					});
 
 					extras.push({
-						type: AttachmentType.PDF,
+						type: 'pdfFile',
 						name: file.name,
 						content: content,
 						processedAsImages: false,
@@ -175,7 +171,7 @@ export async function parseFilesToMessageExtras(
 					emptyFiles.push(file.name);
 				} else if (isLikelyTextFile(content)) {
 					extras.push({
-						type: AttachmentType.TEXT,
+						type: 'textFile',
 						name: file.name,
 						content: content
 					});

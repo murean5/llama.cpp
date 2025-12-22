@@ -1,8 +1,6 @@
 #include "llama-hparams.h"
 
 #include "ggml.h"
-
-#include <algorithm>
 #include <cassert>
 
 void llama_hparams::set_swa_pattern(uint32_t n_pattern, bool dense_first) {
@@ -230,8 +228,4 @@ bool llama_hparams::is_masked_swa(uint32_t n_swa, llama_swa_type swa_type, llama
     }
 
     return false;
-}
-
-bool llama_hparams::use_mrope() const {
-    return rope_sections[0] > 0 && rope_sections[1] > 0;
 }

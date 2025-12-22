@@ -7,5 +7,5 @@ export default defineConfig({
 		timeout: 120000,
 		reuseExistingServer: false
 	},
-	testDir: 'tests/e2e'
+	testDir: 'e2e'
 });

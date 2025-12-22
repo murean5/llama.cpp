@@ -71,10 +71,10 @@ int main(int argc, char ** argv) {
     llama_context * ctx_dft = NULL;
 
     // load the target model
-    auto llama_init_tgt = common_init_from_params(params);
+    common_init_result llama_init_tgt = common_init_from_params(params);
 
-    model_tgt = llama_init_tgt->model();
-    ctx_tgt   = llama_init_tgt->context();
+    model_tgt = llama_init_tgt.model.get();
+    ctx_tgt   = llama_init_tgt.context.get();
 
     // load the draft model
     params.devices = params.speculative.devices;
@@ -87,10 +87,10 @@ int main(int argc, char ** argv) {
     params.cpuparams_batch.n_threads = params.speculative.cpuparams_batch.n_threads;
     params.tensor_buft_overrides     = params.speculative.tensor_buft_overrides;
 
-    auto llama_init_dft = common_init_from_params(params);
+    common_init_result llama_init_dft = common_init_from_params(params);
 
-    model_dft = llama_init_dft->model();
-    ctx_dft   = llama_init_dft->context();
+    model_dft = llama_init_dft.model.get();
+    ctx_dft   = llama_init_dft.context.get();
 
     const llama_vocab * vocab_tgt = llama_model_get_vocab(model_tgt);
     const llama_vocab * vocab_dft = llama_model_get_vocab(model_dft);

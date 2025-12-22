@@ -2,6 +2,7 @@
 	import * as DropdownMenu from '$lib/components/ui/dropdown-menu';
 	import * as Tooltip from '$lib/components/ui/tooltip';
 	import { KeyboardShortcutInfo } from '$lib/components/app';
+	import { TOOLTIP_DELAY_DURATION } from '$lib/constants/tooltip-config';
 	import type { Component } from 'svelte';
 
 	interface ActionItem {
@@ -39,7 +40,7 @@
 		onclick={(e) => e.stopPropagation()}
 	>
 		{#if triggerTooltip}
-			<Tooltip.Root>
+			<Tooltip.Root delayDuration={TOOLTIP_DELAY_DURATION}>
 				<Tooltip.Trigger>
 					{@render iconComponent(triggerIcon, 'h-3 w-3')}
 					<span class="sr-only">{triggerTooltip}</span>

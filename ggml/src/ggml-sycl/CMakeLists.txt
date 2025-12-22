@@ -91,10 +91,7 @@ if (GGML_SYCL_F16)
     add_compile_definitions(GGML_SYCL_F16)
 endif()
 
-if (GGML_SYCL_TARGET STREQUAL "INTEL")
-    add_compile_definitions(GGML_SYCL_WARP_SIZE=16)
-    target_link_options(ggml-sycl PRIVATE  -Xs   -ze-intel-greater-than-4GB-buffer-required)
-elseif (GGML_SYCL_TARGET STREQUAL "NVIDIA")
+if (GGML_SYCL_TARGET STREQUAL "NVIDIA")
     add_compile_definitions(GGML_SYCL_WARP_SIZE=32)
 elseif (GGML_SYCL_TARGET STREQUAL "AMD")
     # INFO: Allowed Sub_group_sizes are not consistent through all
@@ -103,8 +100,7 @@ elseif (GGML_SYCL_TARGET STREQUAL "AMD")
     # Target archs tested working: gfx1030, gfx1031, (Only tested sub_group_size = 32)
     add_compile_definitions(GGML_SYCL_WARP_SIZE=32)
 else()
-    # default for other target
-    add_compile_definitions(GGML_SYCL_WARP_SIZE=32)
+    add_compile_definitions(GGML_SYCL_WARP_SIZE=16)
 endif()
 
 if (GGML_SYCL_GRAPH)

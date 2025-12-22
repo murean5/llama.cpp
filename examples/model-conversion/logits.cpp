@@ -144,7 +144,7 @@ int main(int argc, char ** argv) {
             return 1;
         }
         std::string s(buf, n);
-        printf("%s (%d)", s.c_str(), id);
+        printf("%s", s.c_str());
     }
     printf("\n");
 

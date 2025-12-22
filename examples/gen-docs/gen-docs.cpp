@@ -14,13 +14,12 @@ static void write_table_header(std::ofstream & file) {
 static void write_table_entry(std::ofstream & file, const common_arg & opt) {
     file << "| `";
     // args
-    auto all_args = opt.get_args();
-    for (const auto & arg : all_args) {
-    if (arg == all_args.front()) {
+    for (const auto & arg : opt.args) {
+    if (arg == opt.args.front()) {
             file << arg;
-            if (all_args.size() > 1) file << ", ";
+            if (opt.args.size() > 1) file << ", ";
         } else {
-            file << arg << (arg != all_args.back() ? ", " : "");
+            file << arg << (arg != opt.args.back() ? ", " : "");
         }
     }
     // value hint
@@ -48,7 +47,7 @@ static void write_table(std::ofstream & file, std::vector<common_arg *> & opts) 
     }
 }
 
-static void export_md(std::string fname, llama_example ex, std::string name) {
+static void export_md(std::string fname, llama_example ex) {
     std::ofstream file(fname, std::ofstream::out | std::ofstream::trunc);
 
     common_params params;
@@ -72,14 +71,13 @@ static void export_md(std::string fname, llama_example ex, std::string name) {
     write_table(file, common_options);
     file << "\n\n**Sampling params**\n\n";
     write_table(file, sparam_options);
-    file << "\n\n**" << name << "-specific params**\n\n";
+    file << "\n\n**Example-specific params**\n\n";
     write_table(file, specific_options);
 }
 
 int main(int, char **) {
-    // TODO: add CLI
-    export_md("autogen-completion.md", LLAMA_EXAMPLE_COMPLETION, "Tool");
-    export_md("autogen-server.md", LLAMA_EXAMPLE_SERVER, "Server");
+    export_md("autogen-main.md", LLAMA_EXAMPLE_MAIN);
+    export_md("autogen-server.md", LLAMA_EXAMPLE_SERVER);
 
     return 0;
 }

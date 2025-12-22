@@ -71,7 +71,6 @@ struct llama_model_loader {
 
     bool use_mmap = false;
     bool check_tensors;
-    bool no_alloc;
 
     llama_files files;
     llama_ftype ftype;
@@ -98,7 +97,6 @@ struct llama_model_loader {
         std::vector<std::string> & splits, // optional, only need if the split does not follow naming scheme
         bool use_mmap,
         bool check_tensors,
-        bool no_alloc,
         const llama_model_kv_override * param_overrides_p,
         const llama_model_tensor_buft_override * param_tensor_buft_overrides_p);
 

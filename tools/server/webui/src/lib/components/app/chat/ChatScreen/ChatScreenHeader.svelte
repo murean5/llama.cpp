@@ -1,10 +1,7 @@
 <script lang="ts">
 	import { Settings } from '@lucide/svelte';
-	import { DialogChatSettings } from '$lib/components/app';
+	import { ChatSettingsDialog } from '$lib/components/app';
 	import { Button } from '$lib/components/ui/button';
-	import { useSidebar } from '$lib/components/ui/sidebar';
-
-	const sidebar = useSidebar();
 
 	let settingsOpen = $state(false);
 
@@ -14,9 +11,7 @@
 </script>
 
 <header
-	class="md:background-transparent pointer-events-none fixed top-0 right-0 left-0 z-50 flex items-center justify-end bg-background/40 p-4 backdrop-blur-xl duration-200 ease-linear {sidebar.open
-		? 'md:left-[var(--sidebar-width)]'
-		: ''}"
+	class="md:background-transparent pointer-events-none fixed top-0 right-0 left-0 z-50 flex items-center justify-end bg-background/40 p-4 backdrop-blur-xl md:left-[var(--sidebar-width)]"
 >
 	<div class="pointer-events-auto flex items-center space-x-2">
 		<Button variant="ghost" size="sm" onclick={toggleSettings}>
@@ -25,4 +20,4 @@
 	</div>
 </header>
 
-<DialogChatSettings open={settingsOpen} onOpenChange={(open) => (settingsOpen = open)} />
+<ChatSettingsDialog open={settingsOpen} onOpenChange={(open) => (settingsOpen = open)} />

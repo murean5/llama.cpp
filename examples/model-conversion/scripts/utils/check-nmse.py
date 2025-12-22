@@ -5,7 +5,6 @@ import sys
 import os
 import argparse
 from pathlib import Path
-from common import get_model_name_from_env_path  # type: ignore[import-not-found]
 
 def calculate_nmse(reference, test):
     mse = np.mean((test - reference) ** 2)
@@ -68,13 +67,11 @@ def main():
     parser.add_argument('-m', '--model-path', required=True,  help='Path to the model directory')
     args = parser.parse_args()
 
-    model_name = get_model_name_from_env_path('MODEL_PATH')
+    model_name = os.path.basename(args.model_path)
     data_dir = Path("data")
 
     pytorch_file = data_dir / f"pytorch-{model_name}.bin"
-
-    llamacpp_model_name = get_model_name_from_env_path('CONVERTED_MODEL')
-    llamacpp_file = data_dir / f"llamacpp-{llamacpp_model_name}.bin"
+    llamacpp_file = data_dir / f"llamacpp-{model_name}.bin"
 
     print(f"Model name: {model_name}")
     print(f"PyTorch logits file: {pytorch_file}")

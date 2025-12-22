@@ -49,9 +49,7 @@ trap cleanup SIGINT SIGTERM
 echo "🚀 Starting development servers..."
 echo "📝 Note: Make sure to start llama-server separately if needed"
 cd tools/server/webui
-# Use --insecure-http-parser to handle malformed HTTP responses from llama-server
-# (some responses have both Content-Length and Transfer-Encoding headers)
-storybook dev -p 6006 --ci & NODE_OPTIONS="--insecure-http-parser" vite dev --host 0.0.0.0 &
+storybook dev -p 6006 --ci & vite dev --host 0.0.0.0 &
 
 # Wait for all background processes
 wait

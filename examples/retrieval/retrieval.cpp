@@ -149,10 +149,10 @@ int main(int argc, char ** argv) {
     llama_numa_init(params.numa);
 
     // load the model
-    auto llama_init = common_init_from_params(params);
+    common_init_result llama_init = common_init_from_params(params);
 
-    auto * model = llama_init->model();
-    auto * ctx   = llama_init->context();
+    llama_model * model = llama_init.model.get();
+    llama_context * ctx = llama_init.context.get();
 
     if (model == NULL) {
         LOG_ERR("%s: unable to load model\n", __func__);

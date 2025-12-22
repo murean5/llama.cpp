@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { Button } from '$lib/components/ui/button';
 	import * as Tooltip from '$lib/components/ui/tooltip';
+	import { TOOLTIP_DELAY_DURATION } from '$lib/constants/tooltip-config';
 	import type { Component } from 'svelte';
 
 	interface Props {
@@ -26,7 +27,7 @@
 	}: Props = $props();
 </script>
 
-<Tooltip.Root>
+<Tooltip.Root delayDuration={TOOLTIP_DELAY_DURATION}>
 	<Tooltip.Trigger>
 		<Button
 			{variant}

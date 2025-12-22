@@ -226,16 +226,19 @@ export function preprocessLaTeX(content: string): string {
 		return expr;
 	});
 
-	// Step 5: Apply additional escaping functions (brackets and mhchem)
-	// This must happen BEFORE restoring code blocks to avoid affecting code content
+	// Step 5: Restore code blocks
+	content = content.replace(/<<CODE_BLOCK_(\d+)>>/g, (_, index) => {
+		return codeBlocks[parseInt(index)];
+	});
+
+	// Step 6: Apply additional escaping functions (brackets and mhchem)
 	content = escapeBrackets(content);
 
 	if (doEscapeMhchem && (content.includes('\\ce{') || content.includes('\\pu{'))) {
 		content = escapeMhchem(content);
 	}
 
-	// Step 6: Convert remaining \(...\) → $...$, \[...\] → $$...$$
-	// This must happen BEFORE restoring code blocks to avoid affecting code content
+	// Final pass: Convert \(...\) → $...$, \[...\] → $$...$$
 	content = content
 		// Using the look‑behind pattern `(?<!\\)` we skip matches
 		// that are preceded by a backslash, e.g.
@@ -245,18 +248,12 @@ export function preprocessLaTeX(content: string): string {
 			// Using the look‑behind pattern `(?<!\\)` we skip matches
 			// that are preceded by a backslash, e.g. `\\[4pt]`.
 			/(?<!\\)\\\[([\s\S]*?)\\\]/g, // display, see also PR #16599
-			(_, content: string) => {
-				return `$$${content}$$`;
+			(_, prefix: string, content: string) => {
+				return `${prefix}$$${content}$$`;
 			}
 		);
 
-	// Step 7: Restore code blocks
-	// This happens AFTER all LaTeX conversions to preserve code content
-	content = content.replace(/<<CODE_BLOCK_(\d+)>>/g, (_, index) => {
-		return codeBlocks[parseInt(index)];
-	});
-
-	// Step 8: Restore blockquote markers
+	// Step 7: Restore blockquote markers
 	if (blockquoteMarkers.size > 0) {
 		const finalLines = content.split('\n');
 		const restoredLines = finalLines.map((line, index) => {

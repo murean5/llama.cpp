@@ -192,10 +192,10 @@ int main(int argc, char ** argv) {
     llama_numa_init(params.numa);
 
     // load the target model
-    auto llama_init = common_init_from_params(params);
+    common_init_result llama_init = common_init_from_params(params);
 
-    auto * model = llama_init->model();
-    auto * ctx   = llama_init->context();
+    llama_model * model = llama_init.model.get();
+    llama_context * ctx = llama_init.context.get();
 
     auto * mem = llama_get_memory(ctx);
 

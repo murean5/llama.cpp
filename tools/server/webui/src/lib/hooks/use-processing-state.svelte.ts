@@ -1,4 +1,4 @@
-import { activeProcessingState } from '$lib/stores/chat.svelte';
+import { slotsService } from '$lib/services';
 import { config } from '$lib/stores/settings.svelte';
 
 export interface UseProcessingStateReturn {
@@ -6,7 +6,7 @@ export interface UseProcessingStateReturn {
 	getProcessingDetails(): string[];
 	getProcessingMessage(): string;
 	shouldShowDetails(): boolean;
-	startMonitoring(): void;
+	startMonitoring(): Promise<void>;
 	stopMonitoring(): void;
 }
 
@@ -14,71 +14,92 @@ export interface UseProcessingStateReturn {
  * useProcessingState - Reactive processing state hook
  *
  * This hook provides reactive access to the processing state of the server.
- * It directly reads from chatStore's reactive state and provides
+ * It subscribes to timing data updates from the slots service and provides
  * formatted processing details for UI display.
  *
  * **Features:**
- * - Real-time processing state via direct reactive state binding
+ * - Real-time processing state monitoring
  * - Context and output token tracking
  * - Tokens per second calculation
- * - Automatic updates when streaming data arrives
- * - Supports multiple concurrent conversations
+ * - Graceful degradation when slots endpoint unavailable
+ * - Automatic cleanup on component unmount
  *
  * @returns Hook interface with processing state and control methods
  */
 export function useProcessingState(): UseProcessingStateReturn {
 	let isMonitoring = $state(false);
+	let processingState = $state<ApiProcessingState | null>(null);
 	let lastKnownState = $state<ApiProcessingState | null>(null);
+	let unsubscribe: (() => void) | null = null;
 
-	// Derive processing state reactively from chatStore's direct state
-	const processingState = $derived.by(() => {
-		if (!isMonitoring) {
-			return lastKnownState;
-		}
-		// Read directly from the reactive state export
-		return activeProcessingState();
-	});
-
-	// Track last known state for keepStatsVisible functionality
-	$effect(() => {
-		if (processingState && isMonitoring) {
-			lastKnownState = processingState;
-		}
-	});
-
-	function startMonitoring(): void {
+	async function startMonitoring(): Promise<void> {
 		if (isMonitoring) return;
+
 		isMonitoring = true;
+
+		unsubscribe = slotsService.subscribe((state) => {
+			processingState = state;
+			if (state) {
+				lastKnownState = state;
+			} else {
+				lastKnownState = null;
+			}
+		});
+
+		try {
+			const currentState = await slotsService.getCurrentState();
+
+			if (currentState) {
+				processingState = currentState;
+				lastKnownState = currentState;
+			}
+
+			if (slotsService.isStreaming()) {
+				slotsService.startStreaming();
+			}
+		} catch (error) {
+			console.warn('Failed to start slots monitoring:', error);
+			// Continue without slots monitoring - graceful degradation
+		}
 	}
 
 	function stopMonitoring(): void {
 		if (!isMonitoring) return;
+
 		isMonitoring = false;
 
-		// Only clear last known state if keepStatsVisible is disabled
+		// Only clear processing state if keepStatsVisible is disabled
+		// This preserves the last known state for display when stats should remain visible
 		const currentConfig = config();
 		if (!currentConfig.keepStatsVisible) {
-			lastKnownState = null;
+			processingState = null;
+		} else if (lastKnownState) {
+			// Keep the last known state visible when keepStatsVisible is enabled
+			processingState = lastKnownState;
+		}
+
+		if (unsubscribe) {
+			unsubscribe();
+			unsubscribe = null;
 		}
 	}
 
 	function getProcessingMessage(): string {
-		const state = processingState;
-		if (!state) {
+		if (!processingState) {
 			return 'Processing...';
 		}
 
-		switch (state.status) {
+		switch (processingState.status) {
 			case 'initializing':
 				return 'Initializing...';
 			case 'preparing':
-				if (state.progressPercent !== undefined) {
-					return `Processing (${state.progressPercent}%)`;
+				if (processingState.progressPercent !== undefined) {
+					return `Processing (${processingState.progressPercent}%)`;
 				}
 				return 'Preparing response...';
 			case 'generating':
-				if (state.tokensDecoded > 0) {
-					return `Generating... (${state.tokensDecoded} tokens)`;
+				if (processingState.tokensDecoded > 0) {
+					return `Generating... (${processingState.tokensDecoded} tokens)`;
 				}
 				return 'Generating...';
 			default:
@@ -94,6 +115,7 @@ export function useProcessingState(): UseProcessingStateReturn {
 		}
 
 		const details: string[] = [];
+		const currentConfig = config(); // Get fresh config each time
 
 		// Always show context info when we have valid data
 		if (stateToUse.contextUsed >= 0 && stateToUse.contextTotal > 0) {
@@ -119,7 +141,11 @@ export function useProcessingState(): UseProcessingStateReturn {
 			}
 		}
 
-		if (stateToUse.tokensPerSecond && stateToUse.tokensPerSecond > 0) {
+		if (
+			currentConfig.showTokensPerSecond &&
+			stateToUse.tokensPerSecond &&
+			stateToUse.tokensPerSecond > 0
+		) {
 			details.push(`${stateToUse.tokensPerSecond.toFixed(1)} tokens/sec`);
 		}
 
@@ -131,8 +157,7 @@ export function useProcessingState(): UseProcessingStateReturn {
 	}
 
 	function shouldShowDetails(): boolean {
-		const state = processingState;
-		return state !== null && state.status !== 'idle';
+		return processingState !== null && processingState.status !== 'idle';
 	}
 
 	return {

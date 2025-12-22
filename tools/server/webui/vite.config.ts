@@ -118,16 +118,18 @@ export default defineConfig({
 						provider: 'playwright',
 						instances: [{ browser: 'chromium' }]
 					},
-					include: ['tests/client/**/*.svelte.{test,spec}.{js,ts}'],
+					include: ['src/**/*.svelte.{test,spec}.{js,ts}'],
+					exclude: ['src/lib/server/**'],
 					setupFiles: ['./vitest-setup-client.ts']
 				}
 			},
 			{
 				extends: './vite.config.ts',
 				test: {
-					name: 'unit',
+					name: 'server',
 					environment: 'node',
-					include: ['tests/unit/**/*.{test,spec}.{js,ts}']
+					include: ['src/**/*.{test,spec}.{js,ts}'],
+					exclude: ['src/**/*.svelte.{test,spec}.{js,ts}']
 				}
 			},
 			{
@@ -140,7 +142,7 @@ export default defineConfig({
 						provider: 'playwright',
 						instances: [{ browser: 'chromium', headless: true }]
 					},
-					include: ['tests/stories/**/*.stories.{js,ts,svelte}'],
+					include: ['src/**/*.stories.{js,ts,svelte}'],
 					setupFiles: ['./.storybook/vitest.setup.ts']
 				},
 				plugins: [
@@ -156,7 +158,7 @@ export default defineConfig({
 		proxy: {
 			'/v1': 'http://localhost:8080',
 			'/props': 'http://localhost:8080',
-			'/models': 'http://localhost:8080'
+			'/slots': 'http://localhost:8080'
 		},
 		headers: {
 			'Cross-Origin-Embedder-Policy': 'require-corp',

@@ -3,7 +3,6 @@
 #include "ggml.h" // ggml_op
 
 #include <string>
-#include <set>
 
 //
 // gguf constants (sync with gguf.py)
@@ -37,7 +36,6 @@ enum llm_arch {
     LLM_ARCH_QWEN2VL,
     LLM_ARCH_QWEN3,
     LLM_ARCH_QWEN3MOE,
-    LLM_ARCH_QWEN3NEXT,
     LLM_ARCH_QWEN3VL,
     LLM_ARCH_QWEN3VLMOE,
     LLM_ARCH_PHI2,
@@ -80,7 +78,6 @@ enum llm_arch {
     LLM_ARCH_JAIS,
     LLM_ARCH_NEMOTRON,
     LLM_ARCH_NEMOTRON_H,
-    LLM_ARCH_NEMOTRON_H_MOE,
     LLM_ARCH_EXAONE,
     LLM_ARCH_EXAONE4,
     LLM_ARCH_RWKV6,
@@ -97,7 +94,6 @@ enum llm_arch {
     LLM_ARCH_BAILINGMOE2,
     LLM_ARCH_DOTS1,
     LLM_ARCH_ARCEE,
-    LLM_ARCH_AFMOE,
     LLM_ARCH_ERNIE4_5,
     LLM_ARCH_ERNIE4_5_MOE,
     LLM_ARCH_HUNYUAN_MOE,
@@ -115,9 +111,7 @@ enum llm_arch {
     LLM_ARCH_APERTUS,
     LLM_ARCH_MINIMAX_M2,
     LLM_ARCH_COGVLM,
-    LLM_ARCH_RND1,
     LLM_ARCH_PANGU_EMBED,
-    LLM_ARCH_MISTRAL3,
     LLM_ARCH_UNKNOWN,
 };
 
@@ -127,18 +121,6 @@ enum llm_kv {
     LLM_KV_GENERAL_QUANTIZATION_VERSION,
     LLM_KV_GENERAL_ALIGNMENT,
     LLM_KV_GENERAL_FILE_TYPE,
-    LLM_KV_GENERAL_SAMPLING_SEQUENCE,
-    LLM_KV_GENERAL_SAMPLING_TOP_K,
-    LLM_KV_GENERAL_SAMPLING_TOP_P,
-    LLM_KV_GENERAL_SAMPLING_MIN_P,
-    LLM_KV_GENERAL_SAMPLING_XTC_PROBABILITY,
-    LLM_KV_GENERAL_SAMPLING_XTC_THRESHOLD,
-    LLM_KV_GENERAL_SAMPLING_TEMP,
-    LLM_KV_GENERAL_SAMPLING_PENALTY_LAST_N,
-    LLM_KV_GENERAL_SAMPLING_PENALTY_REPEAT,
-    LLM_KV_GENERAL_SAMPLING_MIROSTAT,
-    LLM_KV_GENERAL_SAMPLING_MIROSTAT_TAU,
-    LLM_KV_GENERAL_SAMPLING_MIROSTAT_ETA,
     LLM_KV_GENERAL_NAME,
     LLM_KV_GENERAL_AUTHOR,
     LLM_KV_GENERAL_VERSION,
@@ -211,7 +193,6 @@ enum llm_kv {
     LLM_KV_ATTENTION_SCALE,
     LLM_KV_ATTENTION_OUTPUT_SCALE,
     LLM_KV_ATTENTION_TEMPERATURE_LENGTH,
-    LLM_KV_ATTENTION_TEMPERATURE_SCALE,
     LLM_KV_ATTENTION_KEY_LENGTH_MLA,
     LLM_KV_ATTENTION_VALUE_LENGTH_MLA,
 
@@ -317,7 +298,6 @@ enum llm_tensor {
     LLM_TENSOR_DENSE_3_OUT,
     LLM_TENSOR_OUTPUT,
     LLM_TENSOR_OUTPUT_NORM,
-    LLM_TENSOR_OUTPUT_NORM_LFM2, // fix for wrong tensor name
     LLM_TENSOR_ROPE_FREQS,
     LLM_TENSOR_ROPE_FACTORS_LONG,
     LLM_TENSOR_ROPE_FACTORS_SHORT,
@@ -332,7 +312,6 @@ enum llm_tensor {
     LLM_TENSOR_ATTN_POST_NORM,
     LLM_TENSOR_ATTN_ROT_EMBD,
     LLM_TENSOR_ATTN_SINKS,
-    LLM_TENSOR_ATTN_GATE,
     LLM_TENSOR_FFN_GATE_INP,
     LLM_TENSOR_FFN_GATE_INP_SHEXP,
     LLM_TENSOR_FFN_NORM,
@@ -382,13 +361,11 @@ enum llm_tensor {
     LLM_TENSOR_SSM_DT,
     LLM_TENSOR_SSM_DT_NORM,
     LLM_TENSOR_SSM_A,
-    LLM_TENSOR_SSM_A_NOSCAN,        // qwen3next special case with MUL instead of SSM_SCAN
     LLM_TENSOR_SSM_B_NORM,
     LLM_TENSOR_SSM_C_NORM,
     LLM_TENSOR_SSM_D,
     LLM_TENSOR_SSM_NORM,
     LLM_TENSOR_SSM_OUT,
-    LLM_TENSOR_SSM_BETA_ALPHA,      // qwen3next
     LLM_TENSOR_TIME_MIX_W0,
     LLM_TENSOR_TIME_MIX_W1,
     LLM_TENSOR_TIME_MIX_W2,
@@ -528,10 +505,6 @@ struct LLM_TN_IMPL {
     const int bid;
     const int xid;
 
-    const std::set<llm_tensor> model_tensors;
-
-    LLM_TN_IMPL(llm_arch arch, llm_tensor tensor, const char * suffix, int bid, int xid);
-
     std::string str() const;
 
     operator std::string() const {
@@ -553,11 +526,11 @@ struct LLM_TN {
     llm_arch arch;
 
     LLM_TN_IMPL operator()(llm_tensor tensor, const char * suffix, int bid = -1, int xid = -1) const {
-        return LLM_TN_IMPL(arch, tensor, suffix, bid, xid);
+        return { arch, tensor, suffix, bid, xid };
     }
 
     LLM_TN_IMPL operator()(llm_tensor tensor, int bid = -1, int xid = -1) const {
-        return LLM_TN_IMPL(arch, tensor, nullptr, bid, xid);
+        return { arch, tensor, nullptr, bid, xid };
     }
 };
 

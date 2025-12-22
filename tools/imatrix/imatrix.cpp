@@ -1265,10 +1265,10 @@ int main(int argc, char ** argv) {
     params.warmup = false;
 
     // init
-    auto llama_init = common_init_from_params(params);
+    common_init_result llama_init = common_init_from_params(params);
 
-    auto * model = llama_init->model();
-    auto * ctx   = llama_init->context();
+    llama_model * model = llama_init.model.get();
+    llama_context * ctx = llama_init.context.get();
 
     if (model == nullptr || ctx == nullptr) {
         LOG_ERR("%s : failed to init\n", __func__);
