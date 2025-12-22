@@ -8,53 +8,86 @@
 *.dot
 *.etag
 *.exe
+*.exp
 *.gcda
 *.gcno
 *.gcov
 *.gguf
 *.gguf.json
 *.lastModified
+*.lastbuildstate
+*.lib
 *.log
 *.metallib
+*.obj
 *.o
+*.pdb
+*.recipe
 *.so
 *.swp
+*.tlog
 *.tmp
-*.DS_Store
 
 # IDE / OS
 
-/.cache/
-/.ccls-cache/
-/.direnv/
-/.envrc
-/.idea/
-/.swiftpm
-/.vs/
-/.vscode/
-/nppBackup
+.cache/
+.ccls-cache/
+.direnv/
+.DS_Store
+.envrc
+.idea/
+.swiftpm
+.vs/
+.vscode/
+nppBackup
 
 
 # Coverage
 
-/gcovr-report/
-/lcov-report/
+gcovr-report/
+lcov-report/
 
 # Build Artifacts
 
-/tags
-/.build/
-/build*
-/release
-/debug
+tags
+.build/
+build*/
+build-*/
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+Testing/
+release
+debug
+!build-info.cmake
+!build-info.cpp.in
+!build-info.sh
+!build.zig
+!docs/build.md
 /libllama.so
 /llama-*
 /vulkan-shaders-gen
+android-ndk-*
+arm_neon.h
+cmake-build-*
+CMakeSettings.json
+compile_commands.json
+ggml-metal-embed.metal
+llama-batched-swift
 /rpc-server
-/out/
-/tmp/
-/autogen-*.md
-/common/build-info.cpp
+out/
+tmp/
+autogen-*.md
+*.vcxproj.user
+*.vcxproj.filters
+*.sln
+*.suo
+*.user
+*.userosscache
+*.sdf
+*.opensdf
+*.db
+*.opendb
 
 # Deprecated
 
@@ -63,45 +96,67 @@
 
 # CI
 
-!/.github/workflows/*.yml
+!.github/workflows/*.yml
 
 # Models
 
-/models/*
-/models-mnt
-!/models/.editorconfig
-!/models/ggml-vocab-*.gguf*
-!/models/templates
+models/*
+models-mnt
+!models/.editorconfig
+!models/ggml-vocab-*.gguf*
+!models/templates
 
 # Zig
-/zig-out/
-/zig-cache/
+zig-out/
+zig-cache/
+
+# Logs
+
+ppl-*.txt
+qnt-*.txt
+perf-*.txt
 
 # Examples
 
-/examples/jeopardy/results.txt
-/tools/server/*.css.hpp
-/tools/server/*.html.hpp
-/tools/server/*.js.hpp
-/tools/server/*.mjs.hpp
-/tools/server/*.gz.hpp
-!/build_64.sh
-!/examples/*.bat
-!/examples/*/*.kts
-!/examples/*/*/*.kts
-!/examples/sycl/*.bat
-!/examples/sycl/*.sh
+examples/jeopardy/results.txt
+tools/server/*.css.hpp
+tools/server/*.html.hpp
+tools/server/*.js.hpp
+tools/server/*.mjs.hpp
+tools/server/*.gz.hpp
+!build_64.sh
+!examples/*.bat
+!examples/*/*.kts
+!examples/*/*/*.kts
+!examples/sycl/*.bat
+!examples/sycl/*.sh
 
 # Server Web UI temporary files
-/tools/server/webui/node_modules
-/tools/server/webui/dist
+node_modules
+tools/server/webui/dist
 
 # Python
 
 /.venv
+/venv/
+venv/
 __pycache__/
+*.py[cod]
+*$py.class
+.Python
+*.egg-info/
+dist/
+eggs/
+.eggs/
+pip-log.txt
+pip-delete-this-directory.txt
 */poetry.lock
 poetry.toml
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+.hypothesis/
 
 # Nix
 /result
@@ -130,10 +185,38 @@ poetry.toml
 # Local scripts
 /run-vim.sh
 /run-chat.sh
-/.ccache/
+.ccache/
 
 # IDE
-/*.code-workspace
-/.windsurf/
-# emscripten
-a.out.*
+*.code-workspace
+.windsurf/
+*.sublime-project
+*.sublime-workspace
+*.swp
+*.swo
+*~
+.project
+.classpath
+.settings/
+.loadpath
+.externalToolBuilders/
+.cproject
+.autotools
+.factorypath
+.buildpath
+target/
+bin/
+*.iml
+.idea_modules/
+*.ipr
+*.iws
+*.bak
+*.orig
+
+# Markdown files (except README.md)
+*.md
+!README.md
+
+# Markdown files (except README.md)
+*.md
+!README.md
