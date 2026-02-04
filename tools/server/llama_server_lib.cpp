@@ -118,6 +118,9 @@ static void register_routes(llama_server_wrapper* wrapper) {
         httplib::Response & res,
         oaicompat_type oaicompat
     ) {
+        ALOGI("=== handle_completions_logic START ===");
+        ALOGI("oaicompat=%d, stream=%d", oaicompat, json_value(data, "stream", false));
+        
         auto completion_id = gen_chatcmplid();
         const auto rd = std::make_shared<server_response_reader>(*wrapper->ctx);
         
@@ -162,12 +165,18 @@ static void register_routes(llama_server_wrapper* wrapper) {
             }
         } else {
             // Реализация стриминга напрямую (без server_sent_event_provider)
+            ALOGI("Streaming mode: waiting for first result...");
             server_task_result_ptr first = rd->next(is_connection_closed);
-            if (!first) return;
+            if (!first) {
+                ALOGW("No first result received!");
+                return;
+            }
             if (first->is_error()) {
+                ALOGE("First result is error: %s", first->to_json().dump().c_str());
                 res_error(res, first->to_json());
                 return;
             }
+            ALOGI("First result received, starting stream...");
             json first_json = first->to_json();
             auto chunk_provider = [first_json, rd, oaicompat](size_t, httplib::DataSink & sink) mutable -> bool {
                 if (!first_json.empty()) {
@@ -200,21 +209,65 @@ static void register_routes(llama_server_wrapper* wrapper) {
     });
 
     svr->Post("/v1/chat/completions", [wrapper, handle_completions_logic](const httplib::Request & req, httplib::Response & res) {
+        ALOGI("=== CHAT COMPLETIONS REQUEST RECEIVED ===");
+        ALOGI("Request body length: %zu", req.body.size());
+        
         try {
+            ALOGI("Parsing JSON body...");
             json body = json::parse(req.body);
+            ALOGI("JSON parsed successfully. Messages count: %zu", body.contains("messages") ? body["messages"].size() : 0);
+            
+            // Логируем сообщения
+            if (body.contains("messages") && body["messages"].is_array()) {
+                for (size_t i = 0; i < body["messages"].size() && i < 5; i++) {
+                    auto& msg = body["messages"][i];
+                    std::string role = msg.contains("role") ? msg["role"].get<std::string>() : "unknown";
+                    std::string content = msg.contains("content") ? msg["content"].get<std::string>() : "";
+                    ALOGI("Message[%zu]: role='%s', content='%.100s'", i, role.c_str(), content.c_str());
+                }
+            }
+            
             std::vector<raw_buffer> files;
+            ALOGI("Calling oaicompat_chat_params_parse...");
             json data = oaicompat_chat_params_parse(body, wrapper->ctx->oai_parser_opt, files);
+            ALOGI("oaicompat_chat_params_parse completed");
+            
+            // ДИАГНОСТИКА: Логируем сформированный промпт
+            if (data.contains("prompt")) {
+                std::string prompt = data["prompt"].get<std::string>();
+                ALOGI("=== FORMATTED PROMPT LENGTH: %zu ===", prompt.size());
+                // Логируем по частям (logcat ограничивает длину)
+                for (size_t i = 0; i < prompt.size() && i < 2000; i += 400) {
+                    ALOGI("PROMPT[%zu]: %.400s", i, prompt.c_str() + i);
+                }
+                ALOGI("=== END PROMPT ===");
+            } else {
+                ALOGE("WARNING: No 'prompt' field in parsed data!");
+                ALOGI("Parsed data keys: %s", data.dump().substr(0, 500).c_str());
+            }
+            
+            ALOGI("Calling handle_completions_logic...");
             handle_completions_logic(SERVER_TASK_TYPE_COMPLETION, data, files, req.is_connection_closed, res, OAICOMPAT_TYPE_CHAT);
+            ALOGI("handle_completions_logic completed");
         } catch (const std::exception& e) {
+            ALOGE("Chat error: %s", e.what());
             res_error(res, {{"error", std::string("Chat error: ") + e.what()}});
         }
     });
 
     svr->Get("/props", [wrapper](const httplib::Request &, httplib::Response & res) {
+        std::string tmpl_source = "null";
+        if (wrapper->ctx->chat_templates) {
+            tmpl_source = common_chat_templates_source(wrapper->ctx->chat_templates.get());
+        }
         json data = {
             {"model_path", wrapper->params.model.path},
             {"total_slots", wrapper->params.n_parallel},
-            {"chat_template", common_chat_templates_source(wrapper->ctx->chat_templates.get())}
+            {"chat_template", tmpl_source},
+            {"chat_template_valid", wrapper->ctx->chat_templates != nullptr},
+            {"oai_parser_tmpls_valid", wrapper->ctx->oai_parser_opt.tmpls != nullptr},
+            {"use_jinja", wrapper->ctx->oai_parser_opt.use_jinja},
+            {"version", "1.2.3-android-debug"}
         };
         res_ok(res, data);
     });
@@ -242,6 +295,59 @@ static int run_server_internal(llama_server_wrapper* wrapper) {
             wrapper->state = LLAMA_SERVER_STATE_ERROR;
             return -1;
         }
+        
+        // КРИТИЧЕСКИ ВАЖНО: Инициализация chat templates и oai_parser_opt
+        // Без этого /v1/chat/completions работает некорректно!
+        ALOGI("Initializing chat templates and OAI parser options...");
+        ALOGI("Model pointer: %p", (void*)wrapper->ctx->model);
+        ALOGI("Chat template param: '%s'", wrapper->params.chat_template.c_str());
+        
+        wrapper->ctx->chat_templates = common_chat_templates_init(
+            wrapper->ctx->model, 
+            wrapper->params.chat_template
+        );
+        
+        // Проверяем что получилось
+        if (wrapper->ctx->chat_templates) {
+            std::string tmpl_src = common_chat_templates_source(wrapper->ctx->chat_templates.get());
+            ALOGI("Chat template loaded! Source (first 200 chars): %.200s", tmpl_src.c_str());
+        } else {
+            ALOGE("CRITICAL: chat_templates is NULL after init!");
+        }
+        
+        // Проверка валидности chat template
+        try {
+            common_chat_format_example(
+                wrapper->ctx->chat_templates.get(), 
+                wrapper->params.use_jinja, 
+                wrapper->params.default_template_kwargs
+            );
+            ALOGI("Chat template validated successfully");
+        } catch (const std::exception & e) {
+            ALOGW("Chat template parsing error: %s", e.what());
+            ALOGW("Falling back to chatml template");
+            wrapper->ctx->chat_templates = common_chat_templates_init(wrapper->ctx->model, "chatml");
+        }
+        
+        // Инициализация oai_parser_opt (КРИТИЧЕСКИ ВАЖНО!)
+        const bool enable_thinking = wrapper->params.use_jinja 
+            && wrapper->params.reasoning_budget != 0 
+            && common_chat_templates_support_enable_thinking(wrapper->ctx->chat_templates.get());
+        
+        wrapper->ctx->oai_parser_opt = {
+            /* use_jinja             */ wrapper->params.use_jinja,
+            /* prefill_assistant     */ wrapper->params.prefill_assistant,
+            /* reasoning_format      */ wrapper->params.reasoning_format,
+            /* chat_template_kwargs  */ wrapper->params.default_template_kwargs,
+            /* common_chat_templates */ wrapper->ctx->chat_templates.get(),
+            /* allow_image           */ wrapper->ctx->mctx ? mtmd_support_vision(wrapper->ctx->mctx) : false,
+            /* allow_audio           */ wrapper->ctx->mctx ? mtmd_support_audio(wrapper->ctx->mctx) : false,
+            /* enable_thinking       */ enable_thinking,
+        };
+        
+        ALOGI("OAI parser options initialized (use_jinja=%d, enable_thinking=%d)", 
+              wrapper->params.use_jinja, enable_thinking);
+        
         wrapper->ctx->init();
         wrapper->svr = std::make_unique<httplib::Server>();
         register_routes(wrapper);
@@ -279,6 +385,11 @@ LLAMA_SERVER_API bool llama_server_init(llama_server_handle_t h, const llama_ser
     w->params.port = c->port > 0 ? c->port : 8080;
     w->params.n_ctx = c->n_ctx > 0 ? c->n_ctx : 2048;
     w->params.n_parallel = c->n_parallel > 0 ? c->n_parallel : 1;
+    
+    // КРИТИЧНО: Включаем Jinja для корректной работы chat templates!
+    // Без этого template не применяется и промпт отправляется "сырым"
+    w->params.use_jinja = true;
+    
     w->state = LLAMA_SERVER_STATE_IDLE;
     return true;
 }
