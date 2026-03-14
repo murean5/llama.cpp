@@ -1,0 +1,225 @@
+{
+  "screen": "com.google.android.apps.messaging",
+  "root": {
+    "class": "FrameLayout",
+    "children": [
+      {
+        "class": "ViewGroup",
+        "children": [
+          {
+            "class": "ViewGroup",
+            "children": [
+              {
+                "class": "ViewGroup"
+              }
+            ]
+          },
+          {
+            "class": "ViewGroup",
+            "children": [
+              {
+                "class": "ViewGroup",
+                "children": [
+                  {
+                    "class": "ComposeView",
+                    "children": [
+                      {
+                        "class": "View",
+                        "children": [
+                          {
+                            "class": "View",
+                            "children": [
+                              {
+                                "class": "View",
+                                "id": "message_list",
+                                "children": [
+                                  {
+                                    "class": "View"
+                                  },
+                                  {
+                                    "class": "View",
+                                    "id": "MMS)",
+                                    "children": [
+                                      {
+                                        "class": "TextView",
+                                        "id": "message_text",
+                                        "text": "Texting with +7 985 174-42-80 (SMS/MMS)"
+                                      }
+                                    ]
+                                  }
+                                ]
+                              },
+                              {
+                                "class": "View",
+                                "children": [
+                                  {
+                                    "class": "View",
+                                    "id": "ComposeRowIcon:Shortcuts",
+                                    "attrs": [
+                                      "clickable"
+                                    ],
+                                    "children": [
+                                      {
+                                        "class": "View",
+                                        "contentDesc": "Show attach content screen"
+                                      },
+                                      {
+                                        "class": "Button"
+                                      }
+                                    ]
+                                  },
+                                  {
+                                    "class": "kex",
+                                    "children": [
+                                      {
+                                        "class": "EditText",
+                                        "attrs": [
+                                          "clickable",
+                                          "editable"
+                                        ],
+                                        "text": "Text message"
+                                      }
+                                    ]
+                                  },
+                                  {
+                                    "class": "View",
+                                    "id": "ComposeRowIcon:Emotive",
+                                    "attrs": [
+                                      "clickable"
+                                    ],
+                                    "children": [
+                                      {
+                                        "class": "View",
+                                        "contentDesc": "Show attach emoji and stickers screen"
+                                      },
+                                      {
+                                        "class": "Button"
+                                      }
+                                    ]
+                                  },
+                                  {
+                                    "class": "View",
+                                    "id": "ComposeRowIcon:Gallery",
+                                    "attrs": [
+                                      "clickable"
+                                    ],
+                                    "children": [
+                                      {
+                                        "class": "View",
+                                        "contentDesc": "Show attach media screen"
+                                      },
+                                      {
+                                        "class": "Button"
+                                      }
+                                    ]
+                                  }
+                                ]
+                              },
+                              {
+                                "class": "View",
+                                "children": [
+                                  {
+                                    "class": "View",
+                                    "id": "Compose:Draft:Send",
+                                    "attrs": [
+                                      "clickable"
+                                    ],
+                                    "children": [
+                                      {
+                                        "class": "View",
+                                        "contentDesc": "Show record a voice message screen"
+                                      },
+                                      {
+                                        "class": "Button"
+                                      }
+                                    ]
+                                  }
+                                ]
+                              },
+                              {
+                                "class": "View",
+                                "children": [
+                                  {
+                                    "class": "View",
+                                    "attrs": [
+                                      "clickable"
+                                    ],
+                                    "children": [
+                                      {
+                                        "class": "View",
+                                        "contentDesc": "Back"
+                                      },
+                                      {
+                                        "class": "Button"
+                                      }
+                                    ]
+                                  },
+                                  {
+                                    "class": "View",
+                                    "attrs": [
+                                      "clickable"
+                                    ],
+                                    "children": [
+                                      {
+                                        "class": "View",
+                                        "id": "monogram_test_tag",
+                                        "children": [
+                                          {
+                                            "class": "View",
+                                            "id": "GlideMonogram"
+                                          }
+                                        ]
+                                      },
+                                      {
+                                        "class": "TextView",
+                                        "text": "+7 985 174-42-80"
+                                      }
+                                    ]
+                                  },
+                                  {
+                                    "class": "View",
+                                    "attrs": [
+                                      "clickable"
+                                    ],
+                                    "children": [
+                                      {
+                                        "class": "View",
+                                        "contentDesc": "Call"
+                                      },
+                                      {
+                                        "class": "Button"
+                                      }
+                                    ]
+                                  },
+                                  {
+                                    "class": "View",
+                                    "attrs": [
+                                      "clickable"
+                                    ],
+                                    "children": [
+                                      {
+                                        "class": "View",
+                                        "contentDesc": "More"
+                                      },
+                                      {
+                                        "class": "Button"
+                                      }
+                                    ]
+                                  }
+                                ]
+                              }
+                            ]
+                          }
+                        ]
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  }
+}

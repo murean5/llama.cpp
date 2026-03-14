@@ -217,6 +217,11 @@ bin/
 *.md
 !README.md
 
+# Local development artifacts that should stay visible in git status
+!dev-so/
+!dev-so/**/
+!dev-so/**/*.so
+
 # Markdown files (except README.md)
 *.md
 !README.md

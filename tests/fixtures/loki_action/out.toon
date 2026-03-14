@@ -1,0 +1,14 @@
+clickable:
+  id | contentDesc | text
+  1 | Show attach content screen | 
+  2 |  | Text message
+  3 | Show attach emoji and stickers screen | 
+  4 | Show attach media screen | 
+  5 | Show record a voice message screen | 
+  6 | Back | 
+  7 |  | +7 985 174-42-80
+  8 | Call | 
+  9 | More | 
+editable:
+  id | text
+  2 | Text message
