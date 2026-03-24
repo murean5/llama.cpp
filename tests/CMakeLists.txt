@@ -184,6 +184,19 @@ llama_build_and_test(test-chat-template.cpp)
 llama_build_and_test(test-json-partial.cpp)
 llama_build_and_test(test-log.cpp)
 llama_build_and_test(test-regex-partial.cpp)
+add_executable(test-loki-action test-loki-action.cpp)
+target_link_libraries(test-loki-action PRIVATE loki_action)
+target_compile_features(test-loki-action PRIVATE cxx_std_17)
+target_include_directories(test-loki-action PRIVATE
+    ${PROJECT_SOURCE_DIR}/tools/loki_action
+    ${PROJECT_SOURCE_DIR}/vendor
+)
+add_test(
+    NAME test-loki-action
+    WORKING_DIRECTORY ${PROJECT_SOURCE_DIR}
+    COMMAND $<TARGET_FILE:test-loki-action>
+)
+set_property(TEST test-loki-action PROPERTY LABELS main)
 
 if (NOT ${CMAKE_SYSTEM_PROCESSOR} MATCHES "s390x")
     llama_build_and_test(test-thread-safety.cpp ARGS -hf ggml-org/models -hff tinyllamas/stories15M-q4_0.gguf -ngl 99 -p "The meaning of life is" -n 128 -c 256 -ub 32 -np 4 -t 2)

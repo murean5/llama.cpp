@@ -399,8 +399,37 @@ LLAMA_SERVER_API bool llama_server_start(llama_server_handle_t h) {
     if (!h) return false;
     auto* w = static_cast<llama_server_wrapper*>(h);
     if (w->running.load()) return false;
-    w->server_thread = std::thread([w]() { run_server_internal(w); });
-    return true;
+    try {
+        if (w->server_thread.joinable()) {
+            w->server_thread.join();
+        }
+
+        w->server_thread = std::thread([w]() {
+            try {
+                (void) run_server_internal(w);
+            } catch (const std::exception & e) {
+                ALOGE("llama_server_start thread exception: %s", e.what());
+                w->state = LLAMA_SERVER_STATE_ERROR;
+                w->running = false;
+            } catch (...) {
+                ALOGE("llama_server_start thread unknown exception");
+                w->state = LLAMA_SERVER_STATE_ERROR;
+                w->running = false;
+            }
+        });
+
+        return true;
+    } catch (const std::exception & e) {
+        ALOGE("llama_server_start exception: %s", e.what());
+        w->state = LLAMA_SERVER_STATE_ERROR;
+        w->running = false;
+        return false;
+    } catch (...) {
+        ALOGE("llama_server_start unknown exception");
+        w->state = LLAMA_SERVER_STATE_ERROR;
+        w->running = false;
+        return false;
+    }
 }
 LLAMA_SERVER_API void llama_server_stop(llama_server_handle_t h) { if (h) static_cast<llama_server_wrapper*>(h)->stop(); }
 LLAMA_SERVER_API llama_server_state_t llama_server_get_state(llama_server_handle_t h) { return h ? static_cast<llama_server_wrapper*>(h)->state.load() : LLAMA_SERVER_STATE_ERROR; }

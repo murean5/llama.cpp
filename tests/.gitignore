@@ -3,3 +3,6 @@
 *.o
 ggml-common.h
 **/*.swp
+!fixtures/
+!fixtures/**/
+!fixtures/**/*
