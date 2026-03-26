@@ -40,6 +40,8 @@ typedef struct {
     int32_t selected_id;
     const char * path_json;
     const char * error_message;
+    const char * action_type;
+    const char * text;
 } loki_action_result_t;
 
 LOKI_ACTION_API loki_action_result_t * loki_action_resolve_path(
