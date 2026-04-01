@@ -11,7 +11,7 @@ and performs the full pipeline:
 2. group interactive candidates with stable numeric `id`
 3. build the TOON payload
 4. call local `llama.cpp` server at `POST /v1/chat/completions`
-5. parse plain integer response like `7`
+5. parse action response like `{"id":7,"action":"click"}`
 6. resolve that `id` back to the original UI `path`
 
 ## Files
@@ -37,6 +37,8 @@ typedef struct {
     int32_t selected_id;
     const char * path_json;
     const char * error_message;
+    const char * action_type;
+    const char * text;
 } loki_action_result_t;
 
 loki_action_result_t * loki_action_resolve_path(
@@ -49,14 +51,41 @@ loki_action_result_t * loki_action_resolve_path(
 void loki_action_result_destroy(loki_action_result_t * result);
 ```
 
+Successful results:
+
+- Click:
+  - `selected_id = 7`
+  - `path_json = "[0,1,3]"`
+  - `action_type = "click"`
+  - `text = NULL`
+- Set text:
+  - `selected_id = 12`
+  - `path_json = "[0,4,0]"`
+  - `action_type = "set_text"`
+  - `text = "котики"`
+
+Semantics:
+
+- `click` means Loki should execute exactly one click on the resolved node.
+- `set_text` means Loki should execute exactly one text insertion on the resolved node.
+- `set_text` is valid only for nodes that are already present in the `editable` TOON group.
+- For prompts that look like text entry or text editing, the library first prioritizes `editable` candidates and asks the model to pick a `set_text` target there.
+- If that editable-priority pass returns no match, the library falls back to the remaining non-editable candidates and asks for a `click` target.
+- Loki must not search for editable nodes on its own and must not do a preliminary click before `set_text`.
+- If the current screen only shows a search bar or launcher container that opens a text field, the correct result is `click`. After the screen changes, a second independent call may return `set_text` for the newly visible `EditText`.
+
 ## Runtime behavior
 
 - Default endpoint: `http://127.0.0.1:8080/v1/chat/completions`
 - Request settings:
   - `stream = false`
   - `temperature = 0.0`
-  - `max_tokens = 16`
-- Built-in system prompt asks the model to use the user request plus the visible screen and reply only with the id number or `-1`.
+  - `max_tokens = 96`
+- Built-in system prompt asks the model to use the user request plus the visible screen and reply only as JSON:
+  - `{"id":7,"action":"click"}`
+  - `{"id":12,"action":"set_text","text":"котики"}`
+  - `{"id":-1}`
+- The native library validates that `set_text` can target only ids that belong to the `editable` group. If the model returns `set_text` for a non-editable id, the result is `LOKI_ACTION_STATUS_INVALID_RESPONSE`.
 - On failure, the library returns `path_json = "[]"` and an error status/message.
 - On Android, the generated TOON payload is written to `adb logcat` with tag `loki_action`.
 
@@ -97,8 +126,19 @@ Output:
    - current screen JSON from accessibility
    - host `127.0.0.1`
    - port of the local `llama.cpp` server
-5. Read `result->path_json` on success.
-6. Always call `loki_action_result_destroy(result)` after reading the fields.
+5. Read on success:
+   - `result->path_json`
+   - `result->selected_id`
+   - `result->action_type`
+   - `result->text`
+6. If `result->action_type == "click"`, perform exactly one click on the returned path.
+7. If `result->action_type == "set_text"`, perform exactly one text insertion with `result->text` on the returned path.
+8. Always call `loki_action_result_destroy(result)` after reading the fields.
+
+Debug interpretation:
+
+- If there is no editable node on the current screen, a request like `напиши в поиске котики` should normally return `click` for the search bar container.
+- After that click changes the screen and an editable field becomes visible, the next independent call should return `set_text` for that `EditText`.
 
 ## Dynamic dependencies of the built ARM64 `.so`
 

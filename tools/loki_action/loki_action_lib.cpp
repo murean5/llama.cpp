@@ -13,6 +13,7 @@
 #include <unistd.h>
 
 #include <algorithm>
+#include <array>
 #include <cctype>
 #include <cstdio>
 #include <cstdlib>
@@ -32,9 +33,28 @@ namespace {
 
 constexpr const char * SYSTEM_PROMPT =
     "You get a user request and visible Android UI elements. "
-    "Pick the best matching element id using both the request and the screen. "
-    "Reply only with the id number. "
-    "Reply -1 if no match.";
+    "Pick the best matching element and action using both the request and the screen. "
+    "Reply only as JSON. "
+    "Use {\"id\":<id>,\"action\":\"click\"} for one-step clicks and for non-editable search bars or containers that only open a text field. "
+    "Use {\"id\":<id>,\"action\":\"set_text\",\"text\":\"...\"} only when that id belongs to an editable element already visible on the screen. "
+    "For set_text, return only the exact value to type, not the whole user command. "
+    "Extract the intended query or replacement text from the request, for example user 'find daddy in search' -> text 'daddy', user 'найди мне котиков' -> text 'котики'. "
+    "Use {\"id\":-1} if no match.";
+
+constexpr const char * EDITABLE_PRIORITY_PROMPT =
+    "You get a user request and only candidates that are already editable. "
+    "If the request is about typing, editing, searching, renaming, or changing text, choose the best editable target and return only "
+    "{\"id\":<id>,\"action\":\"set_text\",\"text\":\"...\"}. "
+    "For text, return only the exact value to type, not the whole command. "
+    "Extract the intended query or replacement text from the request, for example user 'find daddy in search' -> text 'daddy', user 'найди мне котиков' -> text 'котики'. "
+    "If none of these editable elements fit, return only {\"id\":-1}.";
+
+constexpr const char * CLICK_FALLBACK_PROMPT =
+    "You get a user request and visible Android UI elements. "
+    "No editable match was chosen. Pick the best remaining one-step click target. "
+    "Reply only as JSON. "
+    "Use {\"id\":<id>,\"action\":\"click\"} for clicks. "
+    "Use {\"id\":-1} if no match.";
 
 #if defined(ANDROID)
 constexpr const char * LOG_TAG = "loki_action";
@@ -549,6 +569,30 @@ std::string build_user_content(
     return user_content;
 }
 
+bool contains_any_substring(const std::string & haystack, const std::vector<std::string> & needles) {
+    for (const auto & needle : needles) {
+        if (!needle.empty() && haystack.find(needle) != std::string::npos) {
+            return true;
+        }
+    }
+    return false;
+}
+
+bool has_quoted_text_payload(const std::string & input) {
+    const std::array<std::string, 6> quote_marks = {"\"", "'", u8"«", u8"»", u8"“", u8"”"};
+    for (const auto & quote : quote_marks) {
+        const auto first = input.find(quote);
+        if (first == std::string::npos) {
+            continue;
+        }
+        const auto second = input.find(quote, first + quote.size());
+        if (second != std::string::npos && second > first + quote.size()) {
+            return true;
+        }
+    }
+    return false;
+}
+
 void log_multiline_toon(const std::string & toon) {
     if (toon.empty()) {
         LOKI_LOGI("TOON: <empty>");
@@ -623,10 +667,7 @@ std::string extract_textual_content(const json & value) {
         return out;
     }
     if (value.is_object()) {
-        const auto id_it = value.find("id");
-        if (id_it != value.end()) {
-            return extract_textual_content(*id_it);
-        }
+        return value.dump();
     }
     throw std::runtime_error("chat message content is not textual");
 }
@@ -655,10 +696,30 @@ std::string extract_message_content(const json & root) {
     return extract_textual_content(*content_it);
 }
 
-int32_t parse_selected_id_text(const std::string & raw_text) {
+int32_t parse_action_id_field(const json & value) {
+    if (value.is_number_integer()) {
+        return value.get<int32_t>();
+    }
+    if (value.is_string()) {
+        const auto trimmed = trim_copy(value.get<std::string>());
+        if (trimmed.empty()) {
+            throw std::runtime_error("model response id is empty");
+        }
+
+        char * end_ptr = nullptr;
+        const long parsed = std::strtol(trimmed.c_str(), &end_ptr, 10);
+        if (end_ptr != nullptr && end_ptr != trimmed.c_str() && *end_ptr == '\0') {
+            return static_cast<int32_t>(parsed);
+        }
+    }
+
+    throw std::runtime_error("model response id is not an integer");
+}
+
+int32_t parse_action_id_text(const std::string & raw_text) {
     const auto trimmed = trim_copy(raw_text);
     if (trimmed.empty()) {
-        throw std::runtime_error("chat response content is empty");
+        throw std::runtime_error("model response id is empty");
     }
 
     char * end_ptr = nullptr;
@@ -667,27 +728,85 @@ int32_t parse_selected_id_text(const std::string & raw_text) {
         return static_cast<int32_t>(value);
     }
 
+    throw std::runtime_error("model response id is not an integer");
+}
+
+model_action_response parse_action_response_json(const json & parsed);
+
+model_action_response parse_action_response_text(const std::string & raw_text) {
+    const auto trimmed = trim_copy(raw_text);
+    if (trimmed.empty()) {
+        throw std::runtime_error("chat response content is empty");
+    }
+
     try {
         const json parsed = json::parse(trimmed);
-        if (parsed.is_number_integer()) {
-            return parsed.get<int32_t>();
-        }
-        if (parsed.is_object()) {
-            const auto id_it = parsed.find("id");
-            if (id_it != parsed.end()) {
-                return parse_selected_id_text(extract_textual_content(*id_it));
-            }
-        }
-        if (parsed.is_string()) {
-            return parse_selected_id_text(parsed.get<std::string>());
-        }
+        return parse_action_response_json(parsed);
     } catch (const json::exception &) {
     }
 
-    throw std::runtime_error("chat response content is not a supported id format");
+    model_action_response fallback;
+    fallback.selected_id = parse_action_id_text(trimmed);
+    if (fallback.selected_id >= 0) {
+        fallback.action_type = "click";
+    }
+    return fallback;
 }
 
-int32_t extract_selected_id_from_chat_response_with_content(
+model_action_response parse_action_response_json(const json & parsed) {
+    if (parsed.is_number_integer()) {
+        model_action_response result;
+        result.selected_id = parsed.get<int32_t>();
+        if (result.selected_id >= 0) {
+            result.action_type = "click";
+        }
+        return result;
+    }
+    if (parsed.is_string()) {
+        return parse_action_response_text(parsed.get<std::string>());
+    }
+    if (!parsed.is_object()) {
+        throw std::runtime_error("model response must be a JSON object");
+    }
+
+    const auto id_it = parsed.find("id");
+    if (id_it == parsed.end()) {
+        throw std::runtime_error("model response is missing id");
+    }
+
+    model_action_response result;
+    result.selected_id = parse_action_id_field(*id_it);
+    if (result.selected_id < 0) {
+        return result;
+    }
+
+    const auto action_it = parsed.find("action");
+    if (action_it == parsed.end() || !action_it->is_string()) {
+        throw std::runtime_error("model response is missing action");
+    }
+
+    result.action_type = action_it->get<std::string>();
+    if (result.action_type == "click") {
+        return result;
+    }
+    if (result.action_type != "set_text") {
+        throw std::runtime_error("model response action must be click or set_text");
+    }
+
+    const auto text_it = parsed.find("text");
+    if (text_it == parsed.end() || !text_it->is_string()) {
+        throw std::runtime_error("model response set_text action requires text");
+    }
+
+    const std::string raw_insert_text = text_it->get<std::string>();
+    if (trim_copy(raw_insert_text).empty()) {
+        throw std::runtime_error("model response text must not be empty");
+    }
+    result.text = raw_insert_text;
+    return result;
+}
+
+model_action_response extract_action_response_from_chat_response_with_content(
     const std::string & response_body,
     std::string * normalized_content
 ) {
@@ -696,7 +815,7 @@ int32_t extract_selected_id_from_chat_response_with_content(
     if (normalized_content != nullptr) {
         *normalized_content = content;
     }
-    return parse_selected_id_text(content);
+    return parse_action_response_text(content);
 }
 
 const char * duplicate_c_string(const std::string & value) {
@@ -716,6 +835,55 @@ json group_by_attrs_textual(const json & tree) {
     std::vector<int> path;
     walk_tree(tree, path, grouped, next_id);
     return grouped;
+}
+
+json filter_grouped_by_ids(const json & grouped, const std::vector<int32_t> & ids) {
+    json filtered = json::object();
+    if (ids.empty()) {
+        return filtered;
+    }
+
+    const std::unordered_set<int32_t> allowed(ids.begin(), ids.end());
+    for (auto it = grouped.begin(); it != grouped.end(); ++it) {
+        if (!it.value().is_array()) {
+            continue;
+        }
+
+        json items = json::array();
+        for (const auto & item : it.value()) {
+            const auto id_it = item.find("id");
+            if (id_it == item.end() || !id_it->is_number_integer()) {
+                continue;
+            }
+            if (allowed.find(id_it->get<int32_t>()) != allowed.end()) {
+                items.push_back(item);
+            }
+        }
+
+        if (!items.empty()) {
+            filtered[it.key()] = std::move(items);
+        }
+    }
+
+    return filtered;
+}
+
+bool prompt_requests_text_edit(const std::string & user_prompt) {
+    const auto lowered_ascii = to_lower_ascii(user_prompt);
+    const std::vector<std::string> english_keywords = {
+        "type", "enter", "input", "write", "fill", "search", "find", "edit", "update",
+        "change", "rename", "replace", "set text", "message", "text", "query"
+    };
+    const std::vector<std::string> russian_keywords = {
+        u8"напиши", u8"впиши", u8"введи", u8"ввести", u8"ввод", u8"поиск", u8"поиске",
+        u8"найди", u8"найти", u8"измени", u8"изменить", u8"поменяй", u8"поменять",
+        u8"замени", u8"заменить", u8"отредактируй", u8"редактируй", u8"переименуй",
+        u8"назови", u8"текст", u8"сообщение"
+    };
+
+    return has_quoted_text_payload(user_prompt) ||
+        contains_any_substring(lowered_ascii, english_keywords) ||
+        contains_any_substring(user_prompt, russian_keywords);
 }
 
 json prepare_for_toon(const json & grouped) {
@@ -819,19 +987,106 @@ static std::vector<int32_t> collect_candidate_ids(const json & grouped) {
     return ids;
 }
 
-static std::string build_id_grammar(const std::vector<int32_t> & ids) {
-    std::string grammar = "root ::= ";
-    grammar += "\"-1\"";
-    for (const int32_t id : ids) {
-        grammar += " | \"";
-        grammar += std::to_string(id);
-        grammar += "\"";
+static std::vector<int32_t> collect_candidate_ids_for_attr(const json & grouped, const char * attr_name) {
+    std::vector<int32_t> ids;
+    std::unordered_set<int32_t> seen;
+    const auto attr_it = grouped.find(attr_name);
+    if (attr_it == grouped.end() || !attr_it->is_array()) {
+        return ids;
     }
+
+    for (const auto & item : *attr_it) {
+        const auto id_it = item.find("id");
+        if (id_it == item.end() || !id_it->is_number_integer()) {
+            continue;
+        }
+        const int32_t id = id_it->get<int32_t>();
+        if (seen.insert(id).second) {
+            ids.push_back(id);
+        }
+    }
+    std::sort(ids.begin(), ids.end());
+    return ids;
+}
+
+static std::string build_id_rule(const std::vector<int32_t> & ids) {
+    std::string id_rule;
+    for (size_t index = 0; index < ids.size(); ++index) {
+        if (index != 0) {
+            id_rule += " | ";
+        }
+        id_rule += "\"";
+        id_rule += std::to_string(ids[index]);
+        id_rule += "\"";
+    }
+    if (id_rule.empty()) {
+        id_rule = "\"0\"";
+    }
+    return id_rule;
+}
+
+std::string build_action_response_grammar(
+    const std::vector<int32_t> & ids,
+    const std::vector<int32_t> & editable_ids,
+    bool allow_click
+) {
+    const std::string click_id_rule = build_id_rule(ids);
+    const std::string editable_id_rule = build_id_rule(editable_ids);
+    std::string grammar;
+    grammar += "root ::= ws (no-match-response";
+    if (allow_click && !ids.empty()) {
+        grammar += " | click-response";
+    }
+    if (!editable_ids.empty()) {
+        grammar += " | set-text-response";
+    }
+    grammar += ") ws\n";
+    grammar += "no-match-response ::= \"{\" ws \"\\\"id\\\"\" ws \":\" ws \"-1\" ws \"}\"\n";
+    if (allow_click && !ids.empty()) {
+        grammar += "click-response ::= \"{\" ws \"\\\"id\\\"\" ws \":\" ws click-id-value ws \",\" ws \"\\\"action\\\"\" ws \":\" ws \"\\\"click\\\"\" ws \"}\"\n";
+        grammar += "click-id-value ::= ";
+        grammar += click_id_rule;
+        grammar += "\n";
+    }
+    if (!editable_ids.empty()) {
+        grammar += "set-text-response ::= \"{\" ws \"\\\"id\\\"\" ws \":\" ws set-text-id-value ws \",\" ws \"\\\"action\\\"\" ws \":\" ws \"\\\"set_text\\\"\" ws \",\" ws \"\\\"text\\\"\" ws \":\" ws json-string ws \"}\"\n";
+        grammar += "set-text-id-value ::= ";
+        grammar += editable_id_rule;
+        grammar += "\n";
+    }
+    grammar += "json-string ::= \"\\\"\" json-char* \"\\\"\"\n";
+    grammar += "json-char ::= [^\"\\\\\\x0A\\x0D] | escape\n";
+    grammar += "escape ::= \"\\\\\" ([\"\\\\/bfnrt] | (\"u\" hex hex hex hex))\n";
+    grammar += "hex ::= [0-9a-fA-F]\n";
+    grammar += "ws ::= | \" \" ws | \"\\n\" ws | \"\\r\" ws | \"\\t\" ws\n";
     return grammar;
 }
 
-int32_t extract_selected_id_from_chat_response(const std::string & response_body) {
-    return extract_selected_id_from_chat_response_with_content(response_body, nullptr);
+model_action_response extract_action_response_from_chat_response(const std::string & response_body) {
+    return extract_action_response_from_chat_response_with_content(response_body, nullptr);
+}
+
+void validate_action_response_for_grouped(const json & grouped, const model_action_response & response) {
+    if (response.selected_id < 0 || response.action_type.empty()) {
+        return;
+    }
+
+    if (response.action_type == "click") {
+        return;
+    }
+
+    if (response.action_type != "set_text") {
+        throw std::runtime_error("model response action must be click or set_text");
+    }
+
+    if (!response.text.has_value() || trim_copy(*response.text).empty()) {
+        throw std::runtime_error("model response set_text action requires non-empty text");
+    }
+
+    const auto editable_ids = collect_candidate_ids_for_attr(grouped, "editable");
+    if (std::find(editable_ids.begin(), editable_ids.end(), response.selected_id) == editable_ids.end()) {
+        throw std::runtime_error("model returned set_text for non-editable id");
+    }
 }
 
 } // namespace loki_action
@@ -851,7 +1106,9 @@ loki_action_result_t * make_result_global(
     loki_action_status_t status,
     int32_t selected_id,
     const std::string & path_json,
-    const std::string & error_message
+    const std::string & error_message,
+    const std::optional<std::string> & action_type = std::nullopt,
+    const std::optional<std::string> & text = std::nullopt
 ) {
     auto * result = static_cast<loki_action_result_t *>(std::calloc(1, sizeof(loki_action_result_t)));
     if (result == nullptr) {
@@ -861,10 +1118,16 @@ loki_action_result_t * make_result_global(
     result->selected_id = selected_id;
     result->path_json = duplicate_c_string_global(path_json);
     result->error_message = duplicate_c_string_global(error_message);
+    result->action_type = action_type ? duplicate_c_string_global(*action_type) : nullptr;
+    result->text = text ? duplicate_c_string_global(*text) : nullptr;
     if ((result->path_json == nullptr && !path_json.empty()) ||
-        (result->error_message == nullptr && !error_message.empty())) {
+        (result->error_message == nullptr && !error_message.empty()) ||
+        (action_type.has_value() && result->action_type == nullptr) ||
+        (text.has_value() && result->text == nullptr)) {
         std::free(const_cast<char *>(result->path_json));
         std::free(const_cast<char *>(result->error_message));
+        std::free(const_cast<char *>(result->action_type));
+        std::free(const_cast<char *>(result->text));
         std::free(result);
         return nullptr;
     }
@@ -875,20 +1138,21 @@ loki_action::json build_chat_request_payload_global(
     const std::string & user_prompt,
     const std::string & screen_name,
     const std::string & toon,
-    const std::string & grammar
+    const std::string & grammar,
+    const char * system_prompt
 ) {
     return loki_action::json{
         {"model", "default"},
         {"messages", loki_action::json::array({
             loki_action::json{
                 {"role", "system"},
-                {"content", loki_action::SYSTEM_PROMPT},
+                {"content", system_prompt},
             },
             loki_action::json{{"role", "user"}, {"content", loki_action::build_user_content(user_prompt, screen_name, toon)}},
         })},
         {"grammar", grammar},
         {"cache_prompt", true},
-        {"max_tokens", 6},
+        {"max_tokens", 96},
         {"stream", false},
         {"temperature", 0.0},
         {"top_k", 1},
@@ -952,14 +1216,20 @@ LOKI_ACTION_API loki_action_result_t * loki_action_resolve_path(
 
         stage = "build_toon";
         const auto prepared = loki_action::prepare_for_toon(grouped);
-        const auto toon = loki_action::json_to_toon(prepared);
-        loki_action::log_multiline_toon(toon);
+        const auto full_toon = loki_action::json_to_toon(prepared);
+        loki_action::log_multiline_toon(full_toon);
         const auto candidate_ids = loki_action::collect_candidate_ids(grouped);
-        const std::string grammar = loki_action::build_id_grammar(candidate_ids);
-        LOKI_LOGI(
-            "MODEL GRAMMAR: \"%s\"",
-            loki_action::truncate_for_log(loki_action::escape_for_log(grammar), 400).c_str()
-        );
+        const auto editable_candidate_ids = loki_action::collect_candidate_ids_for_attr(grouped, "editable");
+        std::vector<int32_t> non_editable_candidate_ids;
+        non_editable_candidate_ids.reserve(candidate_ids.size());
+        {
+            const std::unordered_set<int32_t> editable_set(editable_candidate_ids.begin(), editable_candidate_ids.end());
+            for (const int32_t id : candidate_ids) {
+                if (editable_set.find(id) == editable_set.end()) {
+                    non_editable_candidate_ids.push_back(id);
+                }
+            }
+        }
 
         const auto screen_name_it = screen.find("screen");
         const std::string screen_name =
@@ -967,82 +1237,161 @@ LOKI_ACTION_API loki_action_result_t * loki_action_resolve_path(
                 ? screen_name_it->get<std::string>()
                 : "unknown";
 
-        stage = "prepare_http";
-        const auto payload = build_chat_request_payload_global(user_prompt_copy, screen_name, toon, grammar);
-        const std::string payload_body = payload.dump();
-        LOKI_LOGI(
-            "MODEL REQUEST: body=\"%s\"",
-            loki_action::truncate_for_log(loki_action::escape_for_log(payload_body)).c_str()
-        );
+        auto run_model_pass = [&](const char * pass_name,
+                                  const char * system_prompt,
+                                  const std::vector<int32_t> & pass_ids,
+                                  const std::vector<int32_t> & pass_editable_ids,
+                                  bool allow_click) -> std::optional<loki_action::model_action_response> {
+            if (pass_ids.empty()) {
+                LOKI_LOGI("MODEL PASS: %s skipped (no candidates)", pass_name);
+                return std::nullopt;
+            }
 
-        stage = "http_post";
-        const auto http_result = loki_action::post_json_via_socket(
-            host_copy,
-            resolved_port,
-            "/v1/chat/completions",
-            payload_body,
-            5,
-            120,
-            5
-        );
-
-        if (!http_result.ok) {
-            const std::string detailed_error =
-                std::string("http_post failed: ") + http_result.error +
-                "; request=\"" +
-                loki_action::truncate_for_log(loki_action::escape_for_log(payload_body), 400) +
-                "\"";
-            LOKI_LOGE("%s", detailed_error.c_str());
-            return make_result_global(
-                LOKI_ACTION_STATUS_HTTP_ERROR,
-                -1,
-                "[]",
-                detailed_error
+            const std::string grammar = loki_action::build_action_response_grammar(
+                pass_ids,
+                pass_editable_ids,
+                allow_click
             );
-        }
 
-        stage = "handle_http_response";
-        const std::string response_body = http_result.body;
-        last_model_response = response_body;
-        LOKI_LOGI(
-            "MODEL RESPONSE: status=%d body=\"%s\"",
-            http_result.status,
-            loki_action::truncate_for_log(loki_action::escape_for_log(response_body)).c_str()
-        );
-
-        if (http_result.status != 200) {
-            return make_result_global(
-                LOKI_ACTION_STATUS_HTTP_ERROR,
-                -1,
-                "[]",
-                response_body.empty()
-                    ? std::string("llama.cpp server returned HTTP ") + std::to_string(http_result.status)
-                    : response_body
+            LOKI_LOGI(
+                "MODEL PASS: %s ids=%zu editable_ids=%zu allow_click=%s",
+                pass_name,
+                pass_ids.size(),
+                pass_editable_ids.size(),
+                allow_click ? "true" : "false"
             );
-        }
+            LOKI_LOGI(
+                "MODEL GRAMMAR: \"%s\"",
+                loki_action::truncate_for_log(loki_action::escape_for_log(grammar), 400).c_str()
+            );
 
-        stage = "parse_model_response";
-        int32_t selected_id = -1;
-        std::string normalized_content;
-        try {
-            selected_id = loki_action::extract_selected_id_from_chat_response_with_content(
+            stage = std::string("prepare_http:") + pass_name;
+            const auto payload = build_chat_request_payload_global(
+                user_prompt_copy,
+                screen_name,
+                full_toon,
+                grammar,
+                system_prompt
+            );
+            const std::string payload_body = payload.dump();
+            LOKI_LOGI(
+                "MODEL REQUEST: pass=%s body=\"%s\"",
+                pass_name,
+                loki_action::truncate_for_log(loki_action::escape_for_log(payload_body)).c_str()
+            );
+
+            stage = std::string("http_post:") + pass_name;
+            const auto http_result = loki_action::post_json_via_socket(
+                host_copy,
+                resolved_port,
+                "/v1/chat/completions",
+                payload_body,
+                5,
+                120,
+                5
+            );
+
+            if (!http_result.ok) {
+                const std::string detailed_error =
+                    std::string("http_post failed: ") + http_result.error +
+                    "; request=\"" +
+                    loki_action::truncate_for_log(loki_action::escape_for_log(payload_body), 400) +
+                    "\"";
+                LOKI_LOGE("%s", detailed_error.c_str());
+                throw std::runtime_error(detailed_error);
+            }
+
+            stage = std::string("handle_http_response:") + pass_name;
+            const std::string response_body = http_result.body;
+            last_model_response = response_body;
+            LOKI_LOGI(
+                "MODEL RESPONSE: pass=%s status=%d body=\"%s\"",
+                pass_name,
+                http_result.status,
+                loki_action::truncate_for_log(loki_action::escape_for_log(response_body)).c_str()
+            );
+
+            if (http_result.status != 200) {
+                throw std::runtime_error(
+                    response_body.empty()
+                        ? std::string("llama.cpp server returned HTTP ") + std::to_string(http_result.status)
+                        : response_body
+                );
+            }
+
+            stage = std::string("parse_model_response:") + pass_name;
+            std::string normalized_content;
+            auto action_response = loki_action::extract_action_response_from_chat_response_with_content(
                 response_body,
                 &normalized_content
             );
             LOKI_LOGI(
-                "MODEL CONTENT: \"%s\" parsed_id=%d",
-                loki_action::truncate_for_log(loki_action::escape_for_log(normalized_content), 400).c_str(),
-                selected_id
+                "MODEL CONTENT: pass=%s \"%s\"",
+                pass_name,
+                loki_action::truncate_for_log(loki_action::escape_for_log(normalized_content), 400).c_str()
             );
-        } catch (const std::bad_cast & e) {
+            LOKI_LOGI(
+                "PARSED ACTION: pass=%s id=%d action=\"%s\" text=\"%s\"",
+                pass_name,
+                action_response.selected_id,
+                action_response.action_type.c_str(),
+                action_response.text
+                    ? loki_action::truncate_for_log(loki_action::escape_for_log(*action_response.text), 400).c_str()
+                    : ""
+            );
+            return action_response;
+        };
+
+        loki_action::model_action_response action_response;
+        bool has_action_response = false;
+        const bool prefers_text_edit = loki_action::prompt_requests_text_edit(user_prompt_copy);
+        LOKI_LOGI(
+            "PROMPT MODE: prefers_text_edit=%s editable_candidates=%zu total_candidates=%zu",
+            prefers_text_edit ? "true" : "false",
+            editable_candidate_ids.size(),
+            candidate_ids.size()
+        );
+
+        try {
+            if (prefers_text_edit && !editable_candidate_ids.empty()) {
+                const auto editable_response = run_model_pass(
+                    "editable-priority",
+                    loki_action::EDITABLE_PRIORITY_PROMPT,
+                    editable_candidate_ids,
+                    editable_candidate_ids,
+                    false
+                );
+                if (editable_response.has_value() && editable_response->selected_id >= 0) {
+                    action_response = *editable_response;
+                    has_action_response = true;
+                }
+            }
+
+            if (!has_action_response) {
+                const bool fallback_to_non_editable = prefers_text_edit;
+                const auto & fallback_ids = fallback_to_non_editable ? non_editable_candidate_ids : candidate_ids;
+                std::vector<int32_t> fallback_editable_ids;
+                if (!fallback_to_non_editable) {
+                    fallback_editable_ids = editable_candidate_ids;
+                }
+                const auto fallback_response = run_model_pass(
+                    fallback_to_non_editable ? "non-editable-fallback" : "default",
+                    fallback_to_non_editable ? loki_action::CLICK_FALLBACK_PROMPT : loki_action::SYSTEM_PROMPT,
+                    fallback_ids,
+                    fallback_editable_ids,
+                    true
+                );
+                if (fallback_response.has_value()) {
+                    action_response = *fallback_response;
+                    has_action_response = true;
+                }
+            }
+        } catch (const std::bad_cast &) {
             const std::string detailed_error =
                 std::string("bad_cast while parsing model response; raw=\"") +
-                loki_action::truncate_for_log(loki_action::escape_for_log(response_body), 400) +
+                loki_action::truncate_for_log(loki_action::escape_for_log(last_model_response), 400) +
                 "\"";
-            LOKI_LOGE(
-                "%s",
-                detailed_error.c_str()
-            );
+            LOKI_LOGE("%s", detailed_error.c_str());
             return make_result_global(
                 LOKI_ACTION_STATUS_INVALID_RESPONSE,
                 -1,
@@ -1053,41 +1402,74 @@ LOKI_ACTION_API loki_action_result_t * loki_action_resolve_path(
             const std::string detailed_error =
                 std::string(e.what()) +
                 "; raw=\"" +
-                loki_action::truncate_for_log(loki_action::escape_for_log(response_body), 400) +
+                loki_action::truncate_for_log(loki_action::escape_for_log(last_model_response), 400) +
                 "\"";
-            LOKI_LOGE(
-                "failed to parse model response: %s",
-                detailed_error.c_str()
-            );
+            LOKI_LOGE("failed to resolve model action: %s", detailed_error.c_str());
+            const bool is_http = detailed_error.find("http_post failed:") != std::string::npos ||
+                detailed_error.find("llama.cpp server returned HTTP ") != std::string::npos;
             return make_result_global(
-                LOKI_ACTION_STATUS_INVALID_RESPONSE,
+                is_http ? LOKI_ACTION_STATUS_HTTP_ERROR : LOKI_ACTION_STATUS_INVALID_RESPONSE,
                 -1,
                 "[]",
                 detailed_error
             );
         }
 
-        if (selected_id < 0) {
+        if (!has_action_response) {
             return make_result_global(
                 LOKI_ACTION_STATUS_ID_NOT_FOUND,
-                selected_id,
+                -1,
                 "[]",
                 "model returned no matching id"
             );
         }
 
-        const auto path_json = loki_action::find_path_json_by_id(grouped, selected_id);
+        if (action_response.selected_id < 0) {
+            return make_result_global(
+                LOKI_ACTION_STATUS_ID_NOT_FOUND,
+                action_response.selected_id,
+                "[]",
+                "model returned no matching id"
+            );
+        }
+
+        const auto path_json = loki_action::find_path_json_by_id(grouped, action_response.selected_id);
         if (path_json.empty()) {
             return make_result_global(
                 LOKI_ACTION_STATUS_ID_NOT_FOUND,
-                selected_id,
+                action_response.selected_id,
                 "[]",
                 "selected id not found in path map"
             );
         }
 
+        stage = "validate_action_response";
+        try {
+            loki_action::validate_action_response_for_grouped(grouped, action_response);
+        } catch (const std::exception & e) {
+            const std::string detailed_error =
+                std::string(e.what()) +
+                "; action=\"" +
+                loki_action::escape_for_log(action_response.action_type) +
+                "\"";
+            LOKI_LOGE("invalid action response: %s", detailed_error.c_str());
+            return make_result_global(
+                LOKI_ACTION_STATUS_INVALID_RESPONSE,
+                action_response.selected_id,
+                "[]",
+                detailed_error
+            );
+        }
+
         stage = "return_success";
-        return make_result_global(LOKI_ACTION_STATUS_OK, selected_id, path_json, "");
+        return make_result_global(
+            LOKI_ACTION_STATUS_OK,
+            action_response.selected_id,
+            path_json,
+            "",
+            action_response.action_type,
+            action_response.text
+        );
     } catch (const std::bad_cast & e) {
         const std::string detailed_error =
             std::string("std::bad_cast at stage=") + stage +
@@ -1124,11 +1506,13 @@ LOKI_ACTION_API void loki_action_result_destroy(loki_action_result_t * result) {
     }
     std::free(const_cast<char *>(result->path_json));
     std::free(const_cast<char *>(result->error_message));
+    std::free(const_cast<char *>(result->action_type));
+    std::free(const_cast<char *>(result->text));
     std::free(result);
 }
 
 LOKI_ACTION_API const char * loki_action_get_version(void) {
-    return "1.0.9";
+    return "1.1.2";
 }
 
 } // extern "C"
