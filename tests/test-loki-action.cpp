@@ -70,10 +70,12 @@ int main() {
     );
 
     const auto grammar = loki_action::build_action_response_grammar({7, 12, 23}, {12});
+    assert_true(grammar.find("done-response") != std::string::npos, "grammar should include done branch");
     assert_true(grammar.find("click-response") != std::string::npos, "grammar should include click branch");
     assert_true(grammar.find("set-text-response") != std::string::npos, "grammar should include set_text branch");
     assert_true(grammar.find(R"("7")") != std::string::npos, "grammar should include allowed ids");
     assert_true(grammar.find("set-text-id-value ::= \"12\"") != std::string::npos, "set_text ids should be limited to editable ids");
+    assert_true(grammar.find(R"("\"done\"")") != std::string::npos, "grammar should mention done");
 
     const auto editable_grammar = loki_action::build_action_response_grammar({7, 12, 23}, {12}, false);
     assert_true(
@@ -98,6 +100,7 @@ int main() {
     assert_true(click_action.selected_id == 7, "click selected id mismatch");
     assert_equals("click", click_action.action_type, "click action mismatch");
     assert_true(!click_action.text.has_value(), "click action should not have text");
+    assert_true(!click_action.done, "click action should not be done");
 
     const auto set_text_response = std::string(
         R"({"choices":[{"message":{"content":"{\"id\":2,\"action\":\"set_text\",\"text\":\"котики\"}"}}]})"
@@ -107,6 +110,7 @@ int main() {
     assert_equals("set_text", set_text_action.action_type, "set_text action mismatch");
     assert_true(set_text_action.text.has_value(), "set_text action should have text");
     assert_equals("котики", *set_text_action.text, "set_text payload mismatch");
+    assert_true(!set_text_action.done, "set_text action should not be done");
 
     const auto set_text_phrase_response = std::string(
         R"({"choices":[{"message":{"content":"{\"id\":2,\"action\":\"set_text\",\"text\":\"привет, как дела?\"}"}}]})"
@@ -114,15 +118,34 @@ int main() {
     const auto set_text_phrase_action = loki_action::extract_action_response_from_chat_response(set_text_phrase_response);
     assert_true(set_text_phrase_action.text.has_value(), "phrase set_text should have text");
     assert_equals("привет, как дела?", *set_text_phrase_action.text, "phrase set_text payload mismatch");
+    assert_true(!set_text_phrase_action.done, "phrase set_text should not be done");
+
+    const auto click_done_false_response = std::string(
+        R"({"choices":[{"message":{"content":"{\"id\":7,\"action\":\"click\",\"done\":false}"}}]})"
+    );
+    const auto click_done_false_action =
+        loki_action::extract_action_response_from_chat_response(click_done_false_response);
+    assert_true(click_done_false_action.selected_id == 7, "click done=false selected id mismatch");
+    assert_equals("click", click_done_false_action.action_type, "click done=false action mismatch");
+    assert_true(!click_done_false_action.done, "click done=false should stay false");
+
+    const auto done_response = std::string(R"({"choices":[{"message":{"content":"{\"done\":true}"}}]})");
+    const auto done_action = loki_action::extract_action_response_from_chat_response(done_response);
+    assert_true(done_action.done, "done response should set done=true");
+    assert_true(done_action.selected_id == -1, "done response should not select id");
+    assert_true(done_action.action_type.empty(), "done response should not have action");
+    assert_true(!done_action.text.has_value(), "done response should not have text");
 
     loki_action::validate_action_response_for_grouped(grouped, click_action);
     loki_action::validate_action_response_for_grouped(grouped, set_text_action);
+    loki_action::validate_action_response_for_grouped(grouped, done_action);
 
     const auto no_match_response = std::string(R"({"choices":[{"message":{"content":"{\"id\":-1}"}}]})");
     const auto no_match_action = loki_action::extract_action_response_from_chat_response(no_match_response);
     assert_true(no_match_action.selected_id == -1, "no match selected id mismatch");
     assert_true(no_match_action.action_type.empty(), "no match should not have action");
     assert_true(!no_match_action.text.has_value(), "no match should not have text");
+    assert_true(!no_match_action.done, "no match should not mark task as done");
 
     bool did_throw = false;
     try {

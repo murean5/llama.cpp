@@ -16,6 +16,7 @@ struct model_action_response {
     int32_t selected_id = -1;
     std::string action_type;
     std::optional<std::string> text;
+    bool done = false;
 };
 
 json group_by_attrs_textual(const json & tree);

@@ -42,6 +42,7 @@ typedef struct {
     const char * error_message;
     const char * action_type;
     const char * text;
+    bool done;
 } loki_action_result_t;
 
 LOKI_ACTION_API loki_action_result_t * loki_action_resolve_path(
