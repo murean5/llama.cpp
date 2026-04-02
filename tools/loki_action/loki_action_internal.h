@@ -28,7 +28,8 @@ bool prompt_requests_text_edit(const std::string & user_prompt);
 std::string build_action_response_grammar(
     const std::vector<int32_t> & ids,
     const std::vector<int32_t> & editable_ids,
-    bool allow_click = true
+    bool allow_click = true,
+    bool allow_back = false
 );
 model_action_response extract_action_response_from_chat_response(const std::string & response_body);
 void validate_action_response_for_grouped(const json & grouped, const model_action_response & response);

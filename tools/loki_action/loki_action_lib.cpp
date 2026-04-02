@@ -40,6 +40,7 @@ constexpr const char * SYSTEM_PROMPT =
     "Otherwise return {\"id\":<id>,\"action\":\"click\",\"done\":false} or {\"id\":<id>,\"action\":\"set_text\",\"text\":\"...\",\"done\":false}. "
     "Use set_text only for visible editable ids and return only the exact value to type. "
     "If a visible editable search field can directly narrow to the requested item, prefer set_text over clicking that same field again. "
+    "Use {\"action_type\":\"back\",\"done\":false} only for explicit back/exit intent or explicit mismatch with current screen/app. "
     "Use history to avoid loops and repeated recent ids. "
     "Use {\"id\":-1} if no fit.";
 
@@ -56,6 +57,7 @@ constexpr const char * CLICK_FALLBACK_PROMPT =
     "No editable match was chosen. "
     "Return {\"done\":true} only when the final goal is already visibly satisfied, not on intermediate screens. "
     "Otherwise return only {\"id\":<id>,\"action\":\"click\",\"done\":false}. "
+    "Use {\"action_type\":\"back\",\"done\":false} only for explicit back/exit intent or explicit mismatch with current screen/app. "
     "Use history to avoid loops and repeated recent ids. Do not click the same search field again if typing there is the correct next step. "
     "Use {\"id\":-1} if no fit.";
 
@@ -64,6 +66,7 @@ constexpr const char * DIRECT_CLICK_PRIORITY_PROMPT =
     "Prefer a direct click on that target instead of opening or typing into search. "
     "Return {\"done\":true} only when the goal is already completed. "
     "Otherwise return only {\"id\":<id>,\"action\":\"click\",\"done\":false}. "
+    "Use {\"action_type\":\"back\",\"done\":false} only for explicit back/exit intent or explicit mismatch with current screen/app. "
     "Use {\"id\":-1} if no fit.";
 
 constexpr const char * DONE_CHECK_PROMPT =
@@ -77,6 +80,7 @@ constexpr const char * STATE_PRIORITY_PROMPT =
     "Use checked/unchecked rows to understand current state and choose one best state-related click target. "
     "Return {\"done\":true} only if requested state is already satisfied now. "
     "Otherwise return only {\"id\":<id>,\"action\":\"click\",\"done\":false}. "
+    "Use {\"action_type\":\"back\",\"done\":false} only for explicit back/exit intent or explicit mismatch with current screen/app. "
     "Use {\"id\":-1} if no fit.";
 
 #if defined(ANDROID)
@@ -580,10 +584,12 @@ struct prompt_context {
     std::string task;
     std::vector<std::string> history_tokens;
     std::vector<std::string> history_labels;
+    std::vector<int32_t> history_ids;
     int step_number = 1;
     bool has_loop_hint = false;
     std::string loop_hint;
     int repeated_tail_clicks = 0;
+    int repeated_tail_same_id = 0;
 };
 
 bool starts_with_literal(const std::string & value, const std::string & prefix) {
@@ -598,6 +604,51 @@ std::string trim_action_prefix(const std::string & history_line) {
         ++pos;
     }
     return trim_copy(history_line.substr(pos));
+}
+
+std::optional<int32_t> extract_history_id(const std::string & action_line) {
+    const std::array<std::string, 2> markers = {"id=", "selected_id="};
+    for (const auto & marker : markers) {
+        const auto marker_pos = action_line.find(marker);
+        if (marker_pos == std::string::npos) {
+            continue;
+        }
+
+        size_t value_pos = marker_pos + marker.size();
+        while (value_pos < action_line.size() &&
+               std::isspace(static_cast<unsigned char>(action_line[value_pos])) != 0) {
+            ++value_pos;
+        }
+        if (value_pos >= action_line.size()) {
+            continue;
+        }
+
+        const bool negative = action_line[value_pos] == '-';
+        if (negative) {
+            ++value_pos;
+        }
+
+        size_t end_pos = value_pos;
+        while (end_pos < action_line.size() &&
+               std::isdigit(static_cast<unsigned char>(action_line[end_pos])) != 0) {
+            ++end_pos;
+        }
+
+        if (end_pos == value_pos) {
+            continue;
+        }
+
+        const std::string number = action_line.substr(
+            negative ? value_pos - 1 : value_pos,
+            end_pos - (negative ? value_pos - 1 : value_pos)
+        );
+        char * end_ptr = nullptr;
+        const long parsed = std::strtol(number.c_str(), &end_ptr, 10);
+        if (end_ptr != nullptr && end_ptr != number.c_str() && *end_ptr == '\0') {
+            return static_cast<int32_t>(parsed);
+        }
+    }
+    return std::nullopt;
 }
 
 std::string compact_history_label(const std::string & action_line, char action_code) {
@@ -653,8 +704,14 @@ prompt_context parse_prompt_context(const std::string & raw_prompt) {
                     action_code = 't';
                 } else if (action_line.find("click") != std::string::npos) {
                     action_code = 'c';
+                } else if (action_line.find("back") != std::string::npos ||
+                           action_line.find(u8"назад") != std::string::npos) {
+                    action_code = 'b';
                 }
                 context.history_tokens.emplace_back(1, action_code);
+                if (const auto parsed_id = extract_history_id(action_line)) {
+                    context.history_ids.push_back(*parsed_id);
+                }
 
                 const auto label = compact_history_label(action_line, action_code);
                 if (!label.empty()) {
@@ -683,6 +740,15 @@ prompt_context parse_prompt_context(const std::string & raw_prompt) {
             break;
         }
         context.repeated_tail_clicks += 1;
+    }
+    if (!context.history_ids.empty()) {
+        const int32_t last_id = context.history_ids.back();
+        for (auto it = context.history_ids.rbegin(); it != context.history_ids.rend(); ++it) {
+            if (*it != last_id) {
+                break;
+            }
+            context.repeated_tail_same_id += 1;
+        }
     }
 
     return context;
@@ -726,6 +792,20 @@ std::string build_user_content(
             user_content += context.history_labels[i];
         }
     }
+    if (!context.history_ids.empty()) {
+        user_content += "\nHistId:";
+        const size_t keep = 6;
+        const size_t start = context.history_ids.size() > keep ? context.history_ids.size() - keep : 0;
+        if (start > 0) {
+            user_content += " ...";
+        }
+        for (size_t i = start; i < context.history_ids.size(); ++i) {
+            if (i != start) {
+                user_content += ">";
+            }
+            user_content += std::to_string(context.history_ids[i]);
+        }
+    }
     user_content += "\nStep:";
     user_content += std::to_string(context.step_number);
     if (context.has_loop_hint) {
@@ -736,8 +816,21 @@ std::string build_user_content(
         user_content += "\nRepeat:clickx";
         user_content += std::to_string(context.repeated_tail_clicks);
     }
+    if (context.repeated_tail_same_id >= 2 && !context.history_ids.empty()) {
+        user_content += "\nRepeatId:";
+        user_content += std::to_string(context.history_ids.back());
+        user_content += "x";
+        user_content += std::to_string(context.repeated_tail_same_id);
+    }
     user_content += "\nApp: ";
     user_content += screen_name;
+    user_content += "\nAppShort: ";
+    const auto dot_pos = screen_name.find_last_of('.');
+    if (dot_pos != std::string::npos && dot_pos + 1 < screen_name.size()) {
+        user_content += screen_name.substr(dot_pos + 1);
+    } else {
+        user_content += screen_name;
+    }
     user_content += "\nUI:\n";
     user_content += toon;
     return user_content;
@@ -1115,6 +1208,11 @@ model_action_response parse_action_response_text(const std::string & raw_text) {
     }
 
     model_action_response fallback;
+    if (to_lower_ascii(trimmed) == "back") {
+        fallback.action_type = "back";
+        fallback.selected_id = -1;
+        return fallback;
+    }
     fallback.selected_id = parse_action_id_text(trimmed);
     if (fallback.selected_id >= 0) {
         fallback.action_type = "click";
@@ -1136,6 +1234,91 @@ model_action_response parse_action_response_json(const json & parsed) {
     }
     if (!parsed.is_object()) {
         throw std::runtime_error("model response must be a JSON object");
+    }
+
+    auto parse_action_name = [&parsed]() -> std::optional<std::string> {
+        const auto action_type_it = parsed.find("action_type");
+        if (action_type_it != parsed.end() && action_type_it->is_string()) {
+            return action_type_it->get<std::string>();
+        }
+        const auto action_it = parsed.find("action");
+        if (action_it != parsed.end() && action_it->is_string()) {
+            return action_it->get<std::string>();
+        }
+        return std::nullopt;
+    };
+
+    const auto action_name = parse_action_name();
+    if (action_name.has_value()) {
+        model_action_response result;
+        const auto lowered_action = to_lower_ascii(trim_copy(*action_name));
+        if (lowered_action == "back") {
+            const auto done_it = parsed.find("done");
+            if (done_it != parsed.end() && parse_done_field(*done_it)) {
+                throw std::runtime_error("model response back action must have done=false");
+            }
+
+            const auto id_it = parsed.find("id");
+            if (id_it != parsed.end()) {
+                const int32_t id = parse_action_id_field(*id_it);
+                if (id >= 0) {
+                    throw std::runtime_error("model response back action must not include positive id");
+                }
+            }
+
+            const auto text_it = parsed.find("text");
+            if (text_it != parsed.end()) {
+                if (!text_it->is_string()) {
+                    throw std::runtime_error("model response back action text must be a string");
+                }
+                if (!trim_copy(text_it->get<std::string>()).empty()) {
+                    throw std::runtime_error("model response back action must not include text");
+                }
+            }
+
+            result.selected_id = -1;
+            result.action_type = "back";
+            result.done = false;
+            return result;
+        }
+
+        const auto id_it = parsed.find("id");
+        if (id_it == parsed.end()) {
+            throw std::runtime_error("model response is missing id");
+        }
+
+        result.selected_id = parse_action_id_field(*id_it);
+        result.done = false;
+
+        const auto done_it = parsed.find("done");
+        if (done_it != parsed.end() && parse_done_field(*done_it)) {
+            throw std::runtime_error("model response action must have done=false");
+        }
+
+        if (result.selected_id < 0) {
+            return result;
+        }
+
+        if (lowered_action == "click") {
+            result.action_type = "click";
+            return result;
+        }
+        if (lowered_action != "set_text") {
+            throw std::runtime_error("model response action must be click, set_text, or back");
+        }
+
+        const auto text_it = parsed.find("text");
+        if (text_it == parsed.end() || !text_it->is_string()) {
+            throw std::runtime_error("model response set_text action requires text");
+        }
+
+        const std::string raw_insert_text = text_it->get<std::string>();
+        if (trim_copy(raw_insert_text).empty()) {
+            throw std::runtime_error("model response text must not be empty");
+        }
+        result.action_type = "set_text";
+        result.text = raw_insert_text;
+        return result;
     }
 
     const auto done_it = parsed.find("done");
@@ -1162,7 +1345,7 @@ model_action_response parse_action_response_json(const json & parsed) {
         throw std::runtime_error("model response is missing action");
     }
 
-    result.action_type = action_it->get<std::string>();
+    result.action_type = to_lower_ascii(trim_copy(action_it->get<std::string>()));
     if (result.action_type == "click") {
         return result;
     }
@@ -1290,6 +1473,65 @@ static bool prompt_requests_state_change(const std::string & user_prompt) {
 
     return contains_any_substring(lowered_ascii, english_keywords) ||
         contains_any_substring(user_prompt, russian_keywords);
+}
+
+static bool prompt_requests_back_navigation(const std::string & user_prompt) {
+    const auto lowered_ascii = to_lower_ascii(user_prompt);
+    const auto lowered_multilang = to_lower_basic_multilang(user_prompt);
+    const std::vector<std::string> english_keywords = {
+        "go back", "back", "go out", "exit", "leave", "return", "not in ", "wrong app", "wrong screen"
+    };
+    const std::vector<std::string> russian_keywords = {
+        u8"назад", u8"вернись", u8"вернуться", u8"выйди", u8"выйти", u8"закрой",
+        u8"не в ", u8"не там", u8"не тот экран", u8"выйти из", u8"вернуться из"
+    };
+
+    return contains_any_substring(lowered_ascii, english_keywords) ||
+        contains_any_substring(lowered_multilang, russian_keywords);
+}
+
+enum class desired_state_t {
+    unknown = 0,
+    enabled = 1,
+    disabled = 2,
+};
+
+static bool prompt_wants_enabled_state(const std::string & user_prompt) {
+    const auto lowered_ascii = to_lower_ascii(user_prompt);
+    const std::vector<std::string> english_keywords = {
+        "turn on", "enable", "switch on", "check", "activate"
+    };
+    const std::vector<std::string> russian_keywords = {
+        u8"включи", u8"включить", u8"включен", u8"включено", u8"активируй", u8"отметь"
+    };
+
+    return contains_any_substring(lowered_ascii, english_keywords) ||
+        contains_any_substring(user_prompt, russian_keywords);
+}
+
+static bool prompt_wants_disabled_state(const std::string & user_prompt) {
+    const auto lowered_ascii = to_lower_ascii(user_prompt);
+    const std::vector<std::string> english_keywords = {
+        "turn off", "disable", "switch off", "uncheck", "deactivate"
+    };
+    const std::vector<std::string> russian_keywords = {
+        u8"выключи", u8"выключить", u8"выключен", u8"выключено", u8"деактивируй", u8"сними отметку"
+    };
+
+    return contains_any_substring(lowered_ascii, english_keywords) ||
+        contains_any_substring(user_prompt, russian_keywords);
+}
+
+static desired_state_t detect_desired_state(const std::string & user_prompt) {
+    const bool wants_enabled = prompt_wants_enabled_state(user_prompt);
+    const bool wants_disabled = prompt_wants_disabled_state(user_prompt);
+    if (wants_enabled && !wants_disabled) {
+        return desired_state_t::enabled;
+    }
+    if (wants_disabled && !wants_enabled) {
+        return desired_state_t::disabled;
+    }
+    return desired_state_t::unknown;
 }
 
 json prepare_for_toon(const json & grouped) {
@@ -1533,30 +1775,64 @@ static int best_match_score_for_attr(
     return best;
 }
 
-static bool prompt_wants_enabled_state(const std::string & user_prompt) {
-    const auto lowered_ascii = to_lower_ascii(user_prompt);
-    const std::vector<std::string> english_keywords = {
-        "turn on", "enable", "switch on", "check", "activate"
-    };
-    const std::vector<std::string> russian_keywords = {
-        u8"включи", u8"включить", u8"включен", u8"включено", u8"активируй", u8"отметь"
+static std::vector<int32_t> collect_state_action_ids(
+    const json & grouped,
+    desired_state_t desired_state,
+    const std::vector<std::string> & task_terms
+) {
+    std::vector<int32_t> ids;
+    std::unordered_map<int32_t, int> best_score_by_id;
+
+    const auto consider_attr = [&](const char * attr_name) {
+        const auto attr_it = grouped.find(attr_name);
+        if (attr_it == grouped.end() || !attr_it->is_array()) {
+            return;
+        }
+        for (const auto & item : *attr_it) {
+            const auto id_it = item.find("id");
+            if (id_it == item.end() || !id_it->is_number_integer()) {
+                continue;
+            }
+            const int32_t id = id_it->get<int32_t>();
+            const int score = score_item_for_terms(item, task_terms).score;
+            auto pos = best_score_by_id.find(id);
+            if (pos == best_score_by_id.end()) {
+                best_score_by_id[id] = score;
+            } else {
+                pos->second = std::max(pos->second, score);
+            }
+        }
     };
 
-    return contains_any_substring(lowered_ascii, english_keywords) ||
-        contains_any_substring(user_prompt, russian_keywords);
-}
+    if (desired_state == desired_state_t::enabled) {
+        consider_attr("unchecked");
+    } else if (desired_state == desired_state_t::disabled) {
+        consider_attr("checked");
+    } else {
+        consider_attr("checked");
+        consider_attr("unchecked");
+    }
 
-static bool prompt_wants_disabled_state(const std::string & user_prompt) {
-    const auto lowered_ascii = to_lower_ascii(user_prompt);
-    const std::vector<std::string> english_keywords = {
-        "turn off", "disable", "switch off", "uncheck", "deactivate"
-    };
-    const std::vector<std::string> russian_keywords = {
-        u8"выключи", u8"выключить", u8"выключен", u8"выключено", u8"деактивируй", u8"сними отметку"
-    };
+    int best_positive = 0;
+    for (const auto & [id, score] : best_score_by_id) {
+        if (score > best_positive) {
+            best_positive = score;
+        }
+    }
 
-    return contains_any_substring(lowered_ascii, english_keywords) ||
-        contains_any_substring(user_prompt, russian_keywords);
+    for (const auto & [id, score] : best_score_by_id) {
+        if (best_positive > 0) {
+            if (score == best_positive) {
+                ids.push_back(id);
+            }
+        } else {
+            ids.push_back(id);
+        }
+    }
+
+    std::sort(ids.begin(), ids.end());
+    ids.erase(std::unique(ids.begin(), ids.end()), ids.end());
+    return ids;
 }
 
 struct done_validation_result {
@@ -1578,30 +1854,57 @@ static done_validation_result validate_done_response(
 
     const auto task_terms = extract_task_match_terms(task);
     const bool state_task = prompt_requests_state_change(task);
+    const bool repeat_id_loop = context.repeated_tail_same_id >= 2;
+    const bool has_progress_history = !context.history_ids.empty();
+
+    if (repeat_id_loop) {
+        result.reason = "repeat-id loop";
+        return result;
+    }
 
     if (state_task) {
-        const bool wants_on = prompt_wants_enabled_state(task);
-        const bool wants_off = prompt_wants_disabled_state(task);
+        const auto desired_state = detect_desired_state(task);
         const int checked_best = best_match_score_for_attr(grouped, "checked", task_terms);
         const int unchecked_best = best_match_score_for_attr(grouped, "unchecked", task_terms);
-        const int min_state_score = 4;
+        const int min_state_score = 5;
+        const int min_state_margin = 2;
 
-        if (wants_on &&
+        if (!has_progress_history) {
+            result.reason = "state task without progress history";
+            return result;
+        }
+
+        if (desired_state == desired_state_t::enabled &&
             checked_best >= min_state_score &&
-            checked_best >= unchecked_best) {
+            checked_best >= unchecked_best + min_state_margin) {
             result.accepted = true;
             result.reason = "state target is checked";
             return result;
         }
-        if (wants_off &&
+        if (desired_state == desired_state_t::disabled &&
             unchecked_best >= min_state_score &&
-            unchecked_best >= checked_best) {
+            unchecked_best >= checked_best + min_state_margin) {
             result.accepted = true;
             result.reason = "state target is unchecked";
             return result;
         }
 
-        result.reason = "state target not yet reached";
+        if (desired_state == desired_state_t::unknown &&
+            has_progress_history &&
+            std::max(checked_best, unchecked_best) >= 7 &&
+            std::abs(checked_best - unchecked_best) >= 3) {
+            result.accepted = true;
+            result.reason = "state strongly resolved";
+            return result;
+        }
+
+        if (desired_state == desired_state_t::enabled) {
+            result.reason = "state conflict: target not confidently checked";
+        } else if (desired_state == desired_state_t::disabled) {
+            result.reason = "state conflict: target not confidently unchecked";
+        } else {
+            result.reason = "state target not yet reached";
+        }
         return result;
     }
 
@@ -1610,23 +1913,44 @@ static done_validation_result validate_done_response(
         result.reason = "no lookup/state completion trigger";
         return result;
     }
+    if (!has_progress_history) {
+        result.reason = "lookup task without progress history";
+        return result;
+    }
 
     const auto item_refs = collect_unique_item_refs(grouped);
     for (const json * item_ptr : item_refs) {
         const auto stats = score_item_for_terms(*item_ptr, task_terms);
-        if (stats.score < 4 || stats.matched_terms == 0 || stats.longest_term < 3) {
-            continue;
-        }
-        if (!item_is_upper_region(*item_ptr)) {
+        if (stats.score < 7 || stats.matched_terms == 0 || stats.longest_term < 4) {
             continue;
         }
 
-        result.accepted = true;
-        result.reason = "target visible in upper region";
-        return result;
+        std::string searchable;
+        if (const auto text = normalized_field(*item_ptr, "text")) {
+            searchable += *text;
+            searchable.push_back(' ');
+        }
+        if (const auto content_desc = normalized_field(*item_ptr, "contentDesc")) {
+            searchable += *content_desc;
+            searchable.push_back(' ');
+        }
+        const auto searchable_lower = to_lower_basic_multilang(searchable);
+        const bool search_like =
+            searchable_lower.find("search") != std::string::npos ||
+            searchable_lower.find(u8"поиск") != std::string::npos ||
+            searchable_lower.find(u8"найти") != std::string::npos;
+        if (search_like) {
+            continue;
+        }
+
+        if (item_is_upper_region(*item_ptr)) {
+            result.accepted = true;
+            result.reason = "strong target match in upper region";
+            return result;
+        }
     }
 
-    result.reason = "target not in upper region";
+    result.reason = "no strong completion signal";
     return result;
 }
 
@@ -1756,12 +2080,16 @@ static std::string build_id_rule(const std::vector<int32_t> & ids) {
 std::string build_action_response_grammar(
     const std::vector<int32_t> & ids,
     const std::vector<int32_t> & editable_ids,
-    bool allow_click
+    bool allow_click,
+    bool allow_back
 ) {
     const std::string click_id_rule = build_id_rule(ids);
     const std::string editable_id_rule = build_id_rule(editable_ids);
     std::string grammar;
     grammar += "root ::= ws (done-response | no-match-response";
+    if (allow_back) {
+        grammar += " | back-response";
+    }
     if (allow_click && !ids.empty()) {
         grammar += " | click-response";
     }
@@ -1771,6 +2099,9 @@ std::string build_action_response_grammar(
     grammar += ") ws\n";
     grammar += "done-response ::= \"{\" ws \"\\\"done\\\"\" ws \":\" ws \"true\" ws \"}\"\n";
     grammar += "no-match-response ::= \"{\" ws \"\\\"id\\\"\" ws \":\" ws \"-1\" ws \"}\"\n";
+    if (allow_back) {
+        grammar += "back-response ::= \"{\" ws \"\\\"action_type\\\"\" ws \":\" ws \"\\\"back\\\"\" ws \",\" ws \"\\\"done\\\"\" ws \":\" ws \"false\" ws \"}\"\n";
+    }
     if (allow_click && !ids.empty()) {
         grammar += "click-response ::= \"{\" ws \"\\\"id\\\"\" ws \":\" ws click-id-value ws \",\" ws \"\\\"action\\\"\" ws \":\" ws \"\\\"click\\\"\" ws \",\" ws \"\\\"done\\\"\" ws \":\" ws \"false\" ws \"}\"\n";
         grammar += "click-id-value ::= ";
@@ -1796,8 +2127,29 @@ model_action_response extract_action_response_from_chat_response(const std::stri
 }
 
 void validate_action_response_for_grouped(const json & grouped, const model_action_response & response) {
-    if (response.done || response.selected_id < 0 || response.action_type.empty()) {
+    if (response.done) {
         return;
+    }
+
+    if (response.action_type.empty()) {
+        if (response.selected_id < 0) {
+            return;
+        }
+        throw std::runtime_error("model response missing action_type for selected id");
+    }
+
+    if (response.action_type == "back") {
+        if (response.selected_id != -1) {
+            throw std::runtime_error("model response back action must use selected_id=-1");
+        }
+        if (response.text.has_value() && !trim_copy(*response.text).empty()) {
+            throw std::runtime_error("model response back action must not include text");
+        }
+        return;
+    }
+
+    if (response.selected_id < 0) {
+        throw std::runtime_error("model response selected id must be non-negative for click/set_text");
     }
 
     if (response.action_type == "click") {
@@ -1805,7 +2157,7 @@ void validate_action_response_for_grouped(const json & grouped, const model_acti
     }
 
     if (response.action_type != "set_text") {
-        throw std::runtime_error("model response action must be click or set_text");
+        throw std::runtime_error("model response action must be click, set_text, or back");
     }
 
     if (!response.text.has_value() || trim_copy(*response.text).empty()) {
@@ -1838,7 +2190,8 @@ loki_action_result_t * make_result_global(
     const std::string & error_message,
     const std::optional<std::string> & action_type = std::nullopt,
     const std::optional<std::string> & text = std::nullopt,
-    bool done = false
+    bool done = false,
+    bool path_is_null = false
 ) {
     auto * result = static_cast<loki_action_result_t *>(std::calloc(1, sizeof(loki_action_result_t)));
     if (result == nullptr) {
@@ -1846,12 +2199,12 @@ loki_action_result_t * make_result_global(
     }
     result->status = status;
     result->selected_id = selected_id;
-    result->path_json = duplicate_c_string_global(path_json);
+    result->path_json = path_is_null ? nullptr : duplicate_c_string_global(path_json);
     result->error_message = duplicate_c_string_global(error_message);
     result->action_type = action_type ? duplicate_c_string_global(*action_type) : nullptr;
     result->text = text ? duplicate_c_string_global(*text) : nullptr;
     result->done = done;
-    if ((result->path_json == nullptr && !path_json.empty()) ||
+    if ((!path_is_null && result->path_json == nullptr && !path_json.empty()) ||
         (result->error_message == nullptr && !error_message.empty()) ||
         (action_type.has_value() && result->action_type == nullptr) ||
         (text.has_value() && result->text == nullptr)) {
@@ -1953,6 +2306,13 @@ LOKI_ACTION_API loki_action_result_t * loki_action_resolve_path(
         const auto candidate_ids = loki_action::collect_candidate_ids(grouped);
         const auto editable_candidate_ids = loki_action::collect_candidate_ids_for_attr(grouped, "editable");
         const auto state_candidate_ids = loki_action::collect_state_candidate_ids(grouped);
+        const auto desired_state = loki_action::detect_desired_state(prompt_context.task);
+        const auto task_match_terms = loki_action::extract_task_match_terms(prompt_context.task);
+        const auto state_action_candidate_ids = loki_action::collect_state_action_ids(
+            grouped,
+            desired_state,
+            task_match_terms
+        );
         const auto direct_click_candidate_ids = loki_action::collect_direct_click_match_ids(
             grouped,
             prompt_context.task
@@ -1981,6 +2341,7 @@ LOKI_ACTION_API loki_action_result_t * loki_action_resolve_path(
                                   const std::vector<int32_t> & pass_ids,
                                   const std::vector<int32_t> & pass_editable_ids,
                                   bool allow_click,
+                                  bool allow_back = false,
                                   bool allow_empty_candidates = false) -> std::optional<loki_action::model_action_response> {
             if (pass_ids.empty() && !allow_empty_candidates) {
                 LOKI_LOGI("STEP %d MODEL PASS: %s skipped (no candidates)", prompt_context.step_number, pass_name);
@@ -1990,16 +2351,18 @@ LOKI_ACTION_API loki_action_result_t * loki_action_resolve_path(
             const std::string grammar = loki_action::build_action_response_grammar(
                 pass_ids,
                 pass_editable_ids,
-                allow_click
+                allow_click,
+                allow_back
             );
 
             LOKI_LOGI(
-                "STEP %d MODEL PASS: %s ids=%zu editable_ids=%zu allow_click=%s",
+                "STEP %d MODEL PASS: %s ids=%zu editable_ids=%zu allow_click=%s allow_back=%s",
                 prompt_context.step_number,
                 pass_name,
                 pass_ids.size(),
                 pass_editable_ids.size(),
-                allow_click ? "true" : "false"
+                allow_click ? "true" : "false",
+                allow_back ? "true" : "false"
             );
             LOKI_LOGI(
                 "STEP %d MODEL GRAMMAR: \"%s\"",
@@ -2093,6 +2456,7 @@ LOKI_ACTION_API loki_action_result_t * loki_action_resolve_path(
         bool has_action_response = false;
         const bool prefers_text_edit = loki_action::prompt_requests_text_edit(prompt_context.task);
         const bool prefers_lookup_input = loki_action::prompt_requests_lookup_input(prompt_context.task);
+        const bool prefers_back_navigation = loki_action::prompt_requests_back_navigation(prompt_context.task);
         const bool prefers_state_action =
             loki_action::prompt_requests_state_change(prompt_context.task) && !state_candidate_ids.empty();
         const bool prefers_editable_input = !editable_candidate_ids.empty() && (
@@ -2101,23 +2465,28 @@ LOKI_ACTION_API loki_action_result_t * loki_action_resolve_path(
             (has_searchable_editable && prompt_context.repeated_tail_clicks >= 2)
         ) && !has_direct_click_match && !prefers_state_action;
         LOKI_LOGI(
-            "STEP %d PROMPT MODE: prefers_text_edit=%s prefers_lookup_input=%s prefers_state_action=%s prefers_editable_input=%s direct_click_match=%s direct_click_ids=%zu state_candidates=%zu searchable_editable=%s editable_candidates=%zu total_candidates=%zu history=%zu",
+            "STEP %d PROMPT MODE: prefers_text_edit=%s prefers_lookup_input=%s prefers_back_navigation=%s prefers_state_action=%s desired_state=%d prefers_editable_input=%s direct_click_match=%s direct_click_ids=%zu state_candidates=%zu state_action_candidates=%zu searchable_editable=%s editable_candidates=%zu total_candidates=%zu history=%zu repeat_same_id=%d",
             prompt_context.step_number,
             prefers_text_edit ? "true" : "false",
             prefers_lookup_input ? "true" : "false",
+            prefers_back_navigation ? "true" : "false",
             prefers_state_action ? "true" : "false",
+            static_cast<int>(desired_state),
             prefers_editable_input ? "true" : "false",
             has_direct_click_match ? "true" : "false",
             direct_click_candidate_ids.size(),
             state_candidate_ids.size(),
+            state_action_candidate_ids.size(),
             has_searchable_editable ? "true" : "false",
             editable_candidate_ids.size(),
             candidate_ids.size(),
-            prompt_context.history_tokens.size()
+            prompt_context.history_tokens.size(),
+            prompt_context.repeated_tail_same_id
         );
 
         auto try_accept_model_response = [&](const loki_action::model_action_response & candidate,
                                              const char * pass_name) -> bool {
+            (void) pass_name;
             if (candidate.done) {
                 const auto done_check = loki_action::validate_done_response(grouped, prompt_context.task, prompt_context);
                 if (!done_check.accepted) {
@@ -2138,6 +2507,21 @@ LOKI_ACTION_API loki_action_result_t * loki_action_resolve_path(
                 );
             }
 
+            if (!candidate.done &&
+                candidate.selected_id >= 0 &&
+                !prompt_context.history_ids.empty() &&
+                prompt_context.history_ids.back() == candidate.selected_id &&
+                prompt_context.repeated_tail_same_id >= 1) {
+                LOKI_LOGI(
+                    "STEP %d ACTION REJECTED: pass=%s reason=repeat-same-id id=%d x%d",
+                    prompt_context.step_number,
+                    pass_name,
+                    candidate.selected_id,
+                    prompt_context.repeated_tail_same_id + 1
+                );
+                return false;
+            }
+
             action_response = candidate;
             has_action_response = true;
             return true;
@@ -2151,6 +2535,7 @@ LOKI_ACTION_API loki_action_result_t * loki_action_resolve_path(
                     {},
                     {},
                     false,
+                    false,
                     true
                 );
                 if (done_check_response.has_value() && done_check_response->done) {
@@ -2159,12 +2544,15 @@ LOKI_ACTION_API loki_action_result_t * loki_action_resolve_path(
             }
 
             if (!has_action_response && prefers_state_action) {
+                const auto & state_ids_for_pass =
+                    state_action_candidate_ids.empty() ? state_candidate_ids : state_action_candidate_ids;
                 const auto state_response = run_model_pass(
                     "state-priority",
                     loki_action::STATE_PRIORITY_PROMPT,
-                    state_candidate_ids,
+                    state_ids_for_pass,
                     {},
-                    true
+                    true,
+                    prefers_back_navigation
                 );
                 if (state_response.has_value() &&
                     (state_response->done || state_response->selected_id >= 0)) {
@@ -2178,7 +2566,8 @@ LOKI_ACTION_API loki_action_result_t * loki_action_resolve_path(
                     loki_action::DIRECT_CLICK_PRIORITY_PROMPT,
                     direct_click_candidate_ids,
                     {},
-                    true
+                    true,
+                    prefers_back_navigation
                 );
                 if (direct_click_response.has_value() &&
                     (direct_click_response->done || direct_click_response->selected_id >= 0)) {
@@ -2212,7 +2601,8 @@ LOKI_ACTION_API loki_action_result_t * loki_action_resolve_path(
                     fallback_to_non_editable ? loki_action::CLICK_FALLBACK_PROMPT : loki_action::SYSTEM_PROMPT,
                     fallback_ids,
                     fallback_editable_ids,
-                    true
+                    true,
+                    prefers_back_navigation
                 );
                 if (fallback_response.has_value()) {
                     (void) try_accept_model_response(
@@ -2271,6 +2661,37 @@ LOKI_ACTION_API loki_action_result_t * loki_action_resolve_path(
             );
         }
 
+        stage = "validate_action_response";
+        try {
+            loki_action::validate_action_response_for_grouped(grouped, action_response);
+        } catch (const std::exception & e) {
+            const std::string detailed_error =
+                std::string(e.what()) +
+                "; action=\"" +
+                loki_action::escape_for_log(action_response.action_type) +
+                "\"";
+            LOKI_LOGE("invalid action response: %s", detailed_error.c_str());
+            return make_result_global(
+                LOKI_ACTION_STATUS_INVALID_RESPONSE,
+                action_response.selected_id,
+                "[]",
+                detailed_error
+            );
+        }
+
+        if (action_response.action_type == "back") {
+            return make_result_global(
+                LOKI_ACTION_STATUS_OK,
+                -1,
+                "",
+                "",
+                action_response.action_type,
+                std::nullopt,
+                false,
+                true
+            );
+        }
+
         if (action_response.selected_id < 0) {
             return make_result_global(
                 LOKI_ACTION_STATUS_ID_NOT_FOUND,
@@ -2287,24 +2708,6 @@ LOKI_ACTION_API loki_action_result_t * loki_action_resolve_path(
                 action_response.selected_id,
                 "[]",
                 "selected id not found in path map"
-            );
-        }
-
-        stage = "validate_action_response";
-        try {
-            loki_action::validate_action_response_for_grouped(grouped, action_response);
-        } catch (const std::exception & e) {
-            const std::string detailed_error =
-                std::string(e.what()) +
-                "; action=\"" +
-                loki_action::escape_for_log(action_response.action_type) +
-                "\"";
-            LOKI_LOGE("invalid action response: %s", detailed_error.c_str());
-            return make_result_global(
-                LOKI_ACTION_STATUS_INVALID_RESPONSE,
-                action_response.selected_id,
-                "[]",
-                detailed_error
             );
         }
 
@@ -2360,7 +2763,7 @@ LOKI_ACTION_API void loki_action_result_destroy(loki_action_result_t * result) {
 }
 
 LOKI_ACTION_API const char * loki_action_get_version(void) {
-    return "1.2.7";
+    return "1.3.0";
 }
 
 } // extern "C"

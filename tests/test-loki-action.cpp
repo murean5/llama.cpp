@@ -73,6 +73,7 @@ int main() {
     assert_true(grammar.find("done-response") != std::string::npos, "grammar should include done branch");
     assert_true(grammar.find("click-response") != std::string::npos, "grammar should include click branch");
     assert_true(grammar.find("set-text-response") != std::string::npos, "grammar should include set_text branch");
+    assert_true(grammar.find("back-response") == std::string::npos, "grammar should not include back by default");
     assert_true(grammar.find(R"("7")") != std::string::npos, "grammar should include allowed ids");
     assert_true(grammar.find("set-text-id-value ::= \"12\"") != std::string::npos, "set_text ids should be limited to editable ids");
     assert_true(grammar.find(R"("\"done\"")") != std::string::npos, "grammar should mention done");
@@ -91,6 +92,16 @@ int main() {
     assert_true(
         click_only_grammar.find("set-text-response") == std::string::npos,
         "grammar without editable ids should not include set_text branch"
+    );
+
+    const auto back_enabled_grammar = loki_action::build_action_response_grammar({7, 12, 23}, {12}, true, true);
+    assert_true(
+        back_enabled_grammar.find("back-response") != std::string::npos,
+        "grammar with allow_back should include back branch"
+    );
+    assert_true(
+        back_enabled_grammar.find(R"("\"action_type\"")") != std::string::npos,
+        "back grammar should use action_type field"
     );
 
     const auto click_response = std::string(
@@ -129,6 +140,22 @@ int main() {
     assert_equals("click", click_done_false_action.action_type, "click done=false action mismatch");
     assert_true(!click_done_false_action.done, "click done=false should stay false");
 
+    const auto back_response = std::string(
+        R"({"choices":[{"message":{"content":"{\"action_type\":\"back\",\"done\":false}"}}]})"
+    );
+    const auto back_action = loki_action::extract_action_response_from_chat_response(back_response);
+    assert_true(back_action.selected_id == -1, "back selected id mismatch");
+    assert_equals("back", back_action.action_type, "back action mismatch");
+    assert_true(!back_action.text.has_value(), "back action should not have text");
+    assert_true(!back_action.done, "back action should not be done");
+
+    const auto legacy_back_response = std::string(
+        R"({"choices":[{"message":{"content":"{\"action\":\"back\",\"done\":false}"}}]})"
+    );
+    const auto legacy_back_action = loki_action::extract_action_response_from_chat_response(legacy_back_response);
+    assert_true(legacy_back_action.selected_id == -1, "legacy back selected id mismatch");
+    assert_equals("back", legacy_back_action.action_type, "legacy back action mismatch");
+
     const auto done_response = std::string(R"({"choices":[{"message":{"content":"{\"done\":true}"}}]})");
     const auto done_action = loki_action::extract_action_response_from_chat_response(done_response);
     assert_true(done_action.done, "done response should set done=true");
@@ -138,6 +165,7 @@ int main() {
 
     loki_action::validate_action_response_for_grouped(grouped, click_action);
     loki_action::validate_action_response_for_grouped(grouped, set_text_action);
+    loki_action::validate_action_response_for_grouped(grouped, back_action);
     loki_action::validate_action_response_for_grouped(grouped, done_action);
 
     const auto no_match_response = std::string(R"({"choices":[{"message":{"content":"{\"id\":-1}"}}]})");
@@ -187,6 +215,27 @@ int main() {
         did_throw = true;
     }
     assert_true(did_throw, "set_text on non-editable id should throw");
+
+    did_throw = false;
+    try {
+        (void) loki_action::extract_action_response_from_chat_response(
+            R"({"choices":[{"message":{"content":"{\"action_type\":\"back\",\"done\":true}"}}]})"
+        );
+    } catch (const std::exception &) {
+        did_throw = true;
+    }
+    assert_true(did_throw, "back with done=true should throw");
+
+    did_throw = false;
+    try {
+        loki_action::validate_action_response_for_grouped(
+            grouped,
+            loki_action::model_action_response{7, "back", std::nullopt, false}
+        );
+    } catch (const std::exception &) {
+        did_throw = true;
+    }
+    assert_true(did_throw, "back with selected id should throw");
 
     did_throw = false;
     try {
