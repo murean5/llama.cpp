@@ -598,28 +598,6 @@ HttpPostResult post_json_via_socket(
     return result;
 }
 
-struct prompt_context {
-    std::string task;
-    std::vector<std::string> history_tokens;
-    std::vector<std::string> history_labels;
-    std::vector<std::string> history_apps;
-    std::vector<std::string> history_entries;
-    std::vector<std::string> history_signatures;
-    std::vector<int32_t> history_ids;
-    int step_number = 1;
-    bool has_loop_hint = false;
-    std::string loop_hint;
-    int repeated_tail_clicks = 0;
-    int repeated_tail_same_id = 0;
-    int repeated_tail_same_signature = 0;
-};
-
-struct extracted_steps_plan {
-    std::string goal;
-    std::vector<std::string> apps;
-    std::vector<std::string> steps;
-};
-
 bool starts_with_literal(const std::string & value, const std::string & prefix) {
     return value.size() >= prefix.size() && value.compare(0, prefix.size(), prefix) == 0;
 }
@@ -876,120 +854,6 @@ std::vector<std::string> split_inline_history_entries(const std::string & histor
         cursor = entry_end;
     }
     return entries;
-}
-
-prompt_context parse_prompt_context(const std::string & raw_prompt) {
-    prompt_context context;
-    context.task = trim_copy(raw_prompt);
-
-    bool in_history = false;
-    size_t cursor = 0;
-    while (cursor <= raw_prompt.size()) {
-        const size_t line_end = raw_prompt.find('\n', cursor);
-        const std::string line = raw_prompt.substr(
-            cursor,
-            line_end == std::string::npos ? std::string::npos : line_end - cursor
-        );
-        const std::string trimmed = trim_copy(line);
-
-        if (starts_with_literal(trimmed, u8"Команда пользователя:") ||
-            starts_with_literal(trimmed, "User command:") ||
-            starts_with_literal(trimmed, "Task:")) {
-            std::string remainder;
-            if (starts_with_literal(trimmed, u8"Команда пользователя:")) {
-                remainder = trim_copy(trimmed.substr(std::strlen(u8"Команда пользователя:")));
-            } else if (starts_with_literal(trimmed, "User command:")) {
-                remainder = trim_copy(trimmed.substr(std::strlen("User command:")));
-            } else {
-                remainder = trim_copy(trimmed.substr(std::strlen("Task:")));
-            }
-
-            const std::array<std::string, 4> history_markers = {
-                std::string("History (old->new):"),
-                std::string("History:"),
-                std::string("Completed actions:"),
-                std::string(u8"Уже выполненные действия:")
-            };
-            bool found_inline_history = false;
-            for (const auto & marker : history_markers) {
-                const auto pos = remainder.find(marker);
-                if (pos == std::string::npos) {
-                    continue;
-                }
-                context.task = trim_copy(remainder.substr(0, pos));
-                for (const auto & entry : split_inline_history_entries(
-                    remainder.substr(pos + marker.size()))) {
-                    append_history_entry(context, entry);
-                }
-                found_inline_history = true;
-                in_history = true;
-                break;
-            }
-            if (!found_inline_history) {
-                context.task = remainder;
-            }
-        } else if (trimmed == u8"Уже выполненные действия:" ||
-                   trimmed == "Completed actions:" ||
-                   trimmed == "History:" ||
-                   starts_with_literal(trimmed, "History (old->new):")) {
-            in_history = true;
-            const auto marker_pos = trimmed.find(':');
-            if (marker_pos != std::string::npos && marker_pos + 1 < trimmed.size()) {
-                for (const auto & entry : split_inline_history_entries(trimmed.substr(marker_pos + 1))) {
-                    append_history_entry(context, entry);
-                }
-            }
-        } else if (in_history) {
-            if (starts_with_literal(trimmed, u8"Определи следующее действие") ||
-                starts_with_literal(trimmed, "Determine the next action") ||
-                starts_with_literal(trimmed, "Next action")) {
-                in_history = false;
-            } else if (!trimmed.empty() && std::isdigit(static_cast<unsigned char>(trimmed[0])) != 0) {
-                append_history_entry(context, trimmed);
-            }
-        }
-
-        if (line_end == std::string::npos) {
-            break;
-        }
-        cursor = line_end + 1;
-    }
-
-    context.step_number = static_cast<int>(context.history_tokens.size()) + 1;
-    if (context.history_tokens.size() >= 4) {
-        const size_t n = context.history_tokens.size();
-        if (context.history_tokens[n - 1] == context.history_tokens[n - 3] &&
-            context.history_tokens[n - 2] == context.history_tokens[n - 4]) {
-            context.has_loop_hint = true;
-            context.loop_hint = context.history_tokens[n - 2] + ">" + context.history_tokens[n - 1];
-        }
-    }
-    for (auto it = context.history_tokens.rbegin(); it != context.history_tokens.rend(); ++it) {
-        if (*it != "c") {
-            break;
-        }
-        context.repeated_tail_clicks += 1;
-    }
-    if (!context.history_ids.empty()) {
-        const int32_t last_id = context.history_ids.back();
-        for (auto it = context.history_ids.rbegin(); it != context.history_ids.rend(); ++it) {
-            if (*it != last_id) {
-                break;
-            }
-            context.repeated_tail_same_id += 1;
-        }
-    }
-    if (!context.history_signatures.empty()) {
-        const auto & last_signature = context.history_signatures.back();
-        for (auto it = context.history_signatures.rbegin(); it != context.history_signatures.rend(); ++it) {
-            if (*it != last_signature) {
-                break;
-            }
-            context.repeated_tail_same_signature += 1;
-        }
-    }
-
-    return context;
 }
 
 std::string compact_single_line(const std::string & raw, size_t max_len = 80) {
@@ -1491,37 +1355,6 @@ std::vector<std::string> parse_compact_string_array(
     return out;
 }
 
-std::optional<extracted_steps_plan> parse_steps_extractor_content(const std::string & content) {
-    const auto trimmed = trim_copy(content);
-    if (trimmed.empty()) {
-        return std::nullopt;
-    }
-
-    const auto parsed = json::parse(trimmed);
-    if (!parsed.is_object()) {
-        return std::nullopt;
-    }
-
-    const auto goal_it = parsed.find("goal");
-    const auto steps_it = parsed.find("steps");
-    if (goal_it == parsed.end() || !goal_it->is_string() || steps_it == parsed.end()) {
-        return std::nullopt;
-    }
-
-    extracted_steps_plan plan;
-    plan.goal = compact_single_line(goal_it->get<std::string>(), 96);
-    plan.steps = parse_compact_string_array(*steps_it, 4, 96);
-    if (plan.goal.empty() || plan.steps.empty()) {
-        return std::nullopt;
-    }
-
-    const auto apps_it = parsed.find("apps");
-    if (apps_it != parsed.end()) {
-        plan.apps = parse_compact_string_array(*apps_it, 3, 32);
-    }
-    return plan;
-}
-
 int32_t parse_action_id_field(const json & value) {
     if (value.is_number_integer()) {
         return value.get<int32_t>();
@@ -1775,6 +1608,155 @@ const char * duplicate_c_string(const std::string & value) {
 }
 
 } // namespace
+
+prompt_context parse_prompt_context(const std::string & raw_prompt) {
+    prompt_context context;
+    context.task = trim_copy(raw_prompt);
+
+    bool in_history = false;
+    size_t cursor = 0;
+    while (cursor <= raw_prompt.size()) {
+        const size_t line_end = raw_prompt.find('\n', cursor);
+        const std::string line = raw_prompt.substr(
+            cursor,
+            line_end == std::string::npos ? std::string::npos : line_end - cursor
+        );
+        const std::string trimmed = trim_copy(line);
+
+        if (starts_with_literal(trimmed, u8"Команда пользователя:") ||
+            starts_with_literal(trimmed, "User command:") ||
+            starts_with_literal(trimmed, "Task:")) {
+            std::string remainder;
+            if (starts_with_literal(trimmed, u8"Команда пользователя:")) {
+                remainder = trim_copy(trimmed.substr(std::strlen(u8"Команда пользователя:")));
+            } else if (starts_with_literal(trimmed, "User command:")) {
+                remainder = trim_copy(trimmed.substr(std::strlen("User command:")));
+            } else {
+                remainder = trim_copy(trimmed.substr(std::strlen("Task:")));
+            }
+
+            const std::array<std::string, 4> history_markers = {
+                std::string("History (old->new):"),
+                std::string("History:"),
+                std::string("Completed actions:"),
+                std::string(u8"Уже выполненные действия:")
+            };
+            bool found_inline_history = false;
+            for (const auto & marker : history_markers) {
+                const auto pos = remainder.find(marker);
+                if (pos == std::string::npos) {
+                    continue;
+                }
+                context.task = trim_copy(remainder.substr(0, pos));
+                for (const auto & entry : split_inline_history_entries(
+                    remainder.substr(pos + marker.size()))) {
+                    append_history_entry(context, entry);
+                }
+                found_inline_history = true;
+                in_history = true;
+                break;
+            }
+            if (!found_inline_history) {
+                context.task = remainder;
+            }
+        } else if (trimmed == u8"Уже выполненные действия:" ||
+                   trimmed == "Completed actions:" ||
+                   trimmed == "History:" ||
+                   starts_with_literal(trimmed, "History (old->new):")) {
+            in_history = true;
+            const auto marker_pos = trimmed.find(':');
+            if (marker_pos != std::string::npos && marker_pos + 1 < trimmed.size()) {
+                for (const auto & entry : split_inline_history_entries(trimmed.substr(marker_pos + 1))) {
+                    append_history_entry(context, entry);
+                }
+            }
+        } else if (in_history) {
+            if (starts_with_literal(trimmed, u8"Определи следующее действие") ||
+                starts_with_literal(trimmed, "Determine the next action") ||
+                starts_with_literal(trimmed, "Next action")) {
+                in_history = false;
+            } else if (!trimmed.empty() && std::isdigit(static_cast<unsigned char>(trimmed[0])) != 0) {
+                append_history_entry(context, trimmed);
+            }
+        }
+
+        if (line_end == std::string::npos) {
+            break;
+        }
+        cursor = line_end + 1;
+    }
+
+    context.step_number = static_cast<int>(context.history_tokens.size()) + 1;
+    if (context.history_tokens.size() >= 4) {
+        const size_t n = context.history_tokens.size();
+        if (context.history_tokens[n - 1] == context.history_tokens[n - 3] &&
+            context.history_tokens[n - 2] == context.history_tokens[n - 4]) {
+            context.has_loop_hint = true;
+            context.loop_hint = context.history_tokens[n - 2] + ">" + context.history_tokens[n - 1];
+        }
+    }
+    for (auto it = context.history_tokens.rbegin(); it != context.history_tokens.rend(); ++it) {
+        if (*it != "c") {
+            break;
+        }
+        context.repeated_tail_clicks += 1;
+    }
+    if (!context.history_ids.empty()) {
+        const int32_t last_id = context.history_ids.back();
+        for (auto it = context.history_ids.rbegin(); it != context.history_ids.rend(); ++it) {
+            if (*it != last_id) {
+                break;
+            }
+            context.repeated_tail_same_id += 1;
+        }
+    }
+    if (!context.history_signatures.empty()) {
+        const auto & last_signature = context.history_signatures.back();
+        for (auto it = context.history_signatures.rbegin(); it != context.history_signatures.rend(); ++it) {
+            if (*it != last_signature) {
+                break;
+            }
+            context.repeated_tail_same_signature += 1;
+        }
+    }
+
+    return context;
+}
+
+std::optional<extracted_steps_plan> parse_steps_extractor_content(const std::string & content) {
+    const auto trimmed = trim_copy(content);
+    if (trimmed.empty()) {
+        return std::nullopt;
+    }
+
+    try {
+        const auto parsed = json::parse(trimmed);
+        if (!parsed.is_object()) {
+            return std::nullopt;
+        }
+
+        const auto goal_it = parsed.find("goal");
+        const auto steps_it = parsed.find("steps");
+        if (goal_it == parsed.end() || !goal_it->is_string() || steps_it == parsed.end()) {
+            return std::nullopt;
+        }
+
+        extracted_steps_plan plan;
+        plan.goal = compact_single_line(goal_it->get<std::string>(), 96);
+        plan.steps = parse_compact_string_array(*steps_it, 4, 96);
+        if (plan.goal.empty() || plan.steps.empty()) {
+            return std::nullopt;
+        }
+
+        const auto apps_it = parsed.find("apps");
+        if (apps_it != parsed.end()) {
+            plan.apps = parse_compact_string_array(*apps_it, 3, 32);
+        }
+        return plan;
+    } catch (const json::exception &) {
+        return std::nullopt;
+    }
+}
 
 json group_by_attrs_textual(const json & tree) {
     json grouped = json::object();
