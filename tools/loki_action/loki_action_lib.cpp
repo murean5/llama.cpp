@@ -32,56 +32,74 @@ namespace loki_action {
 
 namespace {
 
-constexpr const char * SYSTEM_PROMPT =
-    "Choose the next Android UI step from task, history, and current UI. "
-    "Reply only as JSON. "
-    "Use checked/unchecked rows as current toggle state when deciding done or next click. "
-    "Return {\"done\":true} only when the final goal is already visibly satisfied, never on intermediate app, search, or form screens. "
-    "Otherwise return {\"id\":<id>,\"action\":\"click\",\"done\":false} or {\"id\":<id>,\"action\":\"set_text\",\"text\":\"...\",\"done\":false}. "
-    "Use set_text only for visible editable ids and return only the exact value to type. "
-    "If a visible editable search field can directly narrow to the requested item, prefer set_text over clicking that same field again. "
-    "Use {\"action_type\":\"back\",\"done\":false} only for explicit back/exit intent or explicit mismatch with current screen/app. "
-    "Use history to avoid loops and repeated recent ids. "
-    "Use {\"id\":-1} if no fit.";
+constexpr const char* SYSTEM_PROMPT = R"(Role: Android UI action planner.
+Input has Task, App/AppShort, HistoryFull/HistSig, and visible UI candidates.
+Return exactly one JSON object that matches the grammar. No extra text.
+
+Priorities:
+1) If final goal is visibly complete now, return {"done":true}.
+2) Prefer direct visible target.
+3) For search/input goals, if editable target is visible, use set_text and return only value to type.
+4) Use scroll only when no visible target fits and scrolling can reveal target.
+5) Use back only for explicit back/exit/mismatch intent.
+6) Avoid repeating recent failed signatures and ids.
+)";
 
 constexpr const char * EDITABLE_PRIORITY_PROMPT =
-    "Only visible editable ids are available. "
-    "Return {\"done\":true} only when the final goal is already visibly satisfied, not before typing or editing. "
-    "Otherwise return only {\"id\":<id>,\"action\":\"set_text\",\"text\":\"...\",\"done\":false}. "
-    "Return only the exact value to type. "
-    "If this is a search field, prefer entering the entity name instead of clicking again. "
-    "Use history to avoid loops. "
+    "Only editable ids are available. "
+    "Return {\"done\":true} only if final goal is already complete now. "
+    "Else return only {\"id\":<id>,\"action\":\"set_text\",\"text\":\"...\",\"done\":false}. "
+    "Text must be only the value to type. "
     "Use {\"id\":-1} if no fit.";
 
 constexpr const char * CLICK_FALLBACK_PROMPT =
     "No editable match was chosen. "
-    "Return {\"done\":true} only when the final goal is already visibly satisfied, not on intermediate screens. "
-    "Otherwise return only {\"id\":<id>,\"action\":\"click\",\"done\":false}. "
-    "Use {\"action_type\":\"back\",\"done\":false} only for explicit back/exit intent or explicit mismatch with current screen/app. "
-    "Use history to avoid loops and repeated recent ids. Do not click the same search field again if typing there is the correct next step. "
+    "Return {\"done\":true} only if final goal is complete now. "
+    "Else return one action: click, scroll, or back (only for explicit back/exit intent). "
+    "Avoid repeating recent action signature. "
     "Use {\"id\":-1} if no fit.";
 
 constexpr const char * DIRECT_CLICK_PRIORITY_PROMPT =
-    "These clickable ids already match the task target by visible text/content description. "
-    "Prefer a direct click on that target instead of opening or typing into search. "
-    "Return {\"done\":true} only when the goal is already completed. "
-    "Otherwise return only {\"id\":<id>,\"action\":\"click\",\"done\":false}. "
-    "Use {\"action_type\":\"back\",\"done\":false} only for explicit back/exit intent or explicit mismatch with current screen/app. "
+    "Clickable ids already match target by visible text/content. "
+    "Prefer direct click, not search. "
+    "Return {\"done\":true} only when goal is already complete. "
+    "Else return only {\"id\":<id>,\"action\":\"click\",\"done\":false}. "
     "Use {\"id\":-1} if no fit.";
 
 constexpr const char * DONE_CHECK_PROMPT =
-    "Decide completion only. "
-    "Use checked/unchecked rows as explicit current state for toggles and options. "
-    "Return {\"done\":true} if the final user goal is already visibly satisfied on this screen. "
-    "Otherwise return {\"id\":-1}.";
+    "Completion check only. "
+    "Return {\"done\":true} only if final goal is visibly satisfied now. "
+    "Else return {\"id\":-1}.";
 
 constexpr const char * STATE_PRIORITY_PROMPT =
-    "State change task detected. "
-    "Use checked/unchecked rows to understand current state and choose one best state-related click target. "
+    "State-change task detected. "
+    "Use checked/unchecked state first. "
     "Return {\"done\":true} only if requested state is already satisfied now. "
-    "Otherwise return only {\"id\":<id>,\"action\":\"click\",\"done\":false}. "
-    "Use {\"action_type\":\"back\",\"done\":false} only for explicit back/exit intent or explicit mismatch with current screen/app. "
+    "Else return only {\"id\":<id>,\"action\":\"click\",\"done\":false}. "
     "Use {\"id\":-1} if no fit.";
+
+constexpr const char * SCROLL_UP_PRIORITY_PROMPT =
+    "Target not visible and scroll is needed. "
+    "Do one upward scroll first. "
+    "Return only {\"id\":<id>,\"action\":\"scroll_backward\",\"done\":false}. "
+    "Use {\"id\":-1} if no fit.";
+
+constexpr const char * SCROLL_DOWN_PRIORITY_PROMPT =
+    "Upward scroll already did not help enough. "
+    "Now do one downward scroll. "
+    "Return only {\"id\":<id>,\"action\":\"scroll_forward\",\"done\":false}. "
+    "Use {\"id\":-1} if no fit.";
+
+constexpr const char * STEP_EXTRACTOR_PROMPT = R"(Rewrite user task into short execution hints for Android UI agent.
+Return JSON only:
+{"goal":"...","apps":["..."],"steps":["..."]}
+
+Rules:
+- steps: 2 to 4 short imperative English lines
+- allowed action verbs: click, set_text, scroll, back
+- apps: 0 to 3 likely app names (contacts, phone, settings, youtube, etc.)
+- keep goal concise and concrete
+)";
 
 #if defined(ANDROID)
 constexpr const char * LOG_TAG = "loki_action";
@@ -584,12 +602,22 @@ struct prompt_context {
     std::string task;
     std::vector<std::string> history_tokens;
     std::vector<std::string> history_labels;
+    std::vector<std::string> history_apps;
+    std::vector<std::string> history_entries;
+    std::vector<std::string> history_signatures;
     std::vector<int32_t> history_ids;
     int step_number = 1;
     bool has_loop_hint = false;
     std::string loop_hint;
     int repeated_tail_clicks = 0;
     int repeated_tail_same_id = 0;
+    int repeated_tail_same_signature = 0;
+};
+
+struct extracted_steps_plan {
+    std::string goal;
+    std::vector<std::string> apps;
+    std::vector<std::string> steps;
 };
 
 bool starts_with_literal(const std::string & value, const std::string & prefix) {
@@ -651,13 +679,67 @@ std::optional<int32_t> extract_history_id(const std::string & action_line) {
     return std::nullopt;
 }
 
-std::string compact_history_label(const std::string & action_line, char action_code) {
-    std::string label;
-    const auto colon = action_line.find(':');
-    if (colon != std::string::npos && colon + 1 < action_line.size()) {
-        label = trim_copy(action_line.substr(colon + 1));
+std::optional<std::string> extract_history_marker_value(const std::string & action_line, const std::string & marker) {
+    const auto marker_pos = action_line.find(marker);
+    if (marker_pos == std::string::npos) {
+        return std::nullopt;
+    }
+
+    size_t value_pos = marker_pos + marker.size();
+    while (value_pos < action_line.size() &&
+           std::isspace(static_cast<unsigned char>(action_line[value_pos])) != 0) {
+        ++value_pos;
+    }
+    if (value_pos >= action_line.size()) {
+        return std::nullopt;
+    }
+
+    std::string result;
+    if (action_line[value_pos] == '\'' || action_line[value_pos] == '"') {
+        const char quote = action_line[value_pos];
+        ++value_pos;
+        size_t end_pos = value_pos;
+        while (end_pos < action_line.size() && action_line[end_pos] != quote) {
+            ++end_pos;
+        }
+        result = action_line.substr(value_pos, end_pos - value_pos);
     } else {
-        label = trim_copy(action_line);
+        size_t end_pos = value_pos;
+        while (end_pos < action_line.size() &&
+               std::isspace(static_cast<unsigned char>(action_line[end_pos])) == 0) {
+            ++end_pos;
+        }
+        result = action_line.substr(value_pos, end_pos - value_pos);
+    }
+
+    result = trim_copy(result);
+    if (result.empty()) {
+        return std::nullopt;
+    }
+    return result;
+}
+
+std::string shorten_app_name(const std::string & app) {
+    const auto trimmed = trim_copy(app);
+    if (trimmed.empty()) {
+        return "";
+    }
+    const auto dot_pos = trimmed.find_last_of('.');
+    if (dot_pos != std::string::npos && dot_pos + 1 < trimmed.size()) {
+        return trimmed.substr(dot_pos + 1);
+    }
+    return trimmed;
+}
+
+std::string compact_history_label(const std::string & action_line, char action_code) {
+    std::string label = extract_history_marker_value(action_line, "label=").value_or("");
+    if (label.empty()) {
+        const auto colon = action_line.find(':');
+        if (colon != std::string::npos && colon + 1 < action_line.size()) {
+            label = trim_copy(action_line.substr(colon + 1));
+        } else {
+            label = trim_copy(action_line);
+        }
     }
 
     if (label.empty()) {
@@ -668,6 +750,132 @@ std::string compact_history_label(const std::string & action_line, char action_c
         label = label.substr(0, 36);
     }
     return std::string(1, action_code) + ":" + label;
+}
+
+std::string build_history_signature(
+    char action_code,
+    const std::optional<int32_t> & id,
+    const std::optional<std::string> & label,
+    const std::optional<std::string> & app
+) {
+    std::string out(1, action_code);
+    out += "#";
+    out += id.has_value() ? std::to_string(*id) : "-1";
+    if (app.has_value() && !trim_copy(*app).empty()) {
+        out += "@";
+        out += shorten_app_name(*app);
+    }
+    if (label.has_value() && !trim_copy(*label).empty()) {
+        out += ":";
+        auto compact = trim_copy(*label);
+        if (compact.size() > 24) {
+            compact = compact.substr(0, 24);
+        }
+        out += compact;
+    }
+    return out;
+}
+
+char detect_history_action_code(const std::string & action_line) {
+    if (action_line.find("scroll_forward") != std::string::npos) {
+        return 'f';
+    }
+    if (action_line.find("scroll_backward") != std::string::npos) {
+        return 'r';
+    }
+    if (action_line.find("set_text") != std::string::npos) {
+        return 't';
+    }
+    if (action_line.find("click") != std::string::npos) {
+        return 'c';
+    }
+    if (action_line.find("back") != std::string::npos || action_line.find(u8"назад") != std::string::npos) {
+        return 'b';
+    }
+    return 'a';
+}
+
+void append_history_entry(prompt_context & context, const std::string & raw_line) {
+    const auto action_line = trim_action_prefix(trim_copy(raw_line));
+    if (action_line.empty()) {
+        return;
+    }
+
+    const char action_code = detect_history_action_code(action_line);
+    const auto parsed_id = extract_history_id(action_line);
+    const auto label = extract_history_marker_value(action_line, "label=");
+    const auto app = extract_history_marker_value(action_line, "app=");
+    context.history_tokens.emplace_back(1, action_code);
+    if (parsed_id.has_value()) {
+        context.history_ids.push_back(*parsed_id);
+    }
+    const auto compact_label = compact_history_label(action_line, action_code);
+    if (!compact_label.empty()) {
+        context.history_labels.push_back(compact_label);
+    }
+    if (app.has_value()) {
+        context.history_apps.push_back(shorten_app_name(*app));
+    }
+    context.history_entries.push_back(action_line);
+    context.history_signatures.push_back(build_history_signature(action_code, parsed_id, label, app));
+}
+
+std::vector<std::string> split_inline_history_entries(const std::string & history_blob) {
+    std::vector<std::string> entries;
+    size_t cursor = 0;
+    while (cursor < history_blob.size()) {
+        while (cursor < history_blob.size() &&
+               std::isspace(static_cast<unsigned char>(history_blob[cursor])) != 0) {
+            ++cursor;
+        }
+        if (cursor >= history_blob.size()) {
+            break;
+        }
+
+        if (std::isdigit(static_cast<unsigned char>(history_blob[cursor])) == 0) {
+            break;
+        }
+        while (cursor < history_blob.size() &&
+               std::isdigit(static_cast<unsigned char>(history_blob[cursor])) != 0) {
+            ++cursor;
+        }
+        if (cursor >= history_blob.size() || history_blob[cursor] != '.') {
+            break;
+        }
+        ++cursor;
+        while (cursor < history_blob.size() &&
+               std::isspace(static_cast<unsigned char>(history_blob[cursor])) != 0) {
+            ++cursor;
+        }
+        const size_t entry_begin = cursor;
+        size_t entry_end = history_blob.size();
+        for (size_t i = cursor; i + 2 < history_blob.size(); ++i) {
+            if (history_blob[i] == '\n') {
+                entry_end = i;
+                break;
+            }
+            if (std::isdigit(static_cast<unsigned char>(history_blob[i])) != 0) {
+                size_t digits_end = i;
+                while (digits_end < history_blob.size() &&
+                       std::isdigit(static_cast<unsigned char>(history_blob[digits_end])) != 0) {
+                    ++digits_end;
+                }
+                if (digits_end < history_blob.size() &&
+                    history_blob[digits_end] == '.' &&
+                    digits_end + 1 < history_blob.size() &&
+                    std::isspace(static_cast<unsigned char>(history_blob[digits_end + 1])) != 0) {
+                    entry_end = i;
+                    break;
+                }
+            }
+        }
+        const auto entry = trim_copy(history_blob.substr(entry_begin, entry_end - entry_begin));
+        if (!entry.empty()) {
+            entries.push_back(entry);
+        }
+        cursor = entry_end;
+    }
+    return entries;
 }
 
 prompt_context parse_prompt_context(const std::string & raw_prompt) {
@@ -684,39 +892,60 @@ prompt_context parse_prompt_context(const std::string & raw_prompt) {
         );
         const std::string trimmed = trim_copy(line);
 
-        if (starts_with_literal(trimmed, u8"Команда пользователя:")) {
-            context.task = trim_copy(trimmed.substr(std::strlen(u8"Команда пользователя:")));
-        } else if (starts_with_literal(trimmed, "User command:")) {
-            context.task = trim_copy(trimmed.substr(std::strlen("User command:")));
-        } else if (starts_with_literal(trimmed, "Task:")) {
-            context.task = trim_copy(trimmed.substr(std::strlen("Task:")));
-        } else if (trimmed == u8"Уже выполненные действия:" || trimmed == "Completed actions:" || trimmed == "History:") {
+        if (starts_with_literal(trimmed, u8"Команда пользователя:") ||
+            starts_with_literal(trimmed, "User command:") ||
+            starts_with_literal(trimmed, "Task:")) {
+            std::string remainder;
+            if (starts_with_literal(trimmed, u8"Команда пользователя:")) {
+                remainder = trim_copy(trimmed.substr(std::strlen(u8"Команда пользователя:")));
+            } else if (starts_with_literal(trimmed, "User command:")) {
+                remainder = trim_copy(trimmed.substr(std::strlen("User command:")));
+            } else {
+                remainder = trim_copy(trimmed.substr(std::strlen("Task:")));
+            }
+
+            const std::array<std::string, 4> history_markers = {
+                std::string("History (old->new):"),
+                std::string("History:"),
+                std::string("Completed actions:"),
+                std::string(u8"Уже выполненные действия:")
+            };
+            bool found_inline_history = false;
+            for (const auto & marker : history_markers) {
+                const auto pos = remainder.find(marker);
+                if (pos == std::string::npos) {
+                    continue;
+                }
+                context.task = trim_copy(remainder.substr(0, pos));
+                for (const auto & entry : split_inline_history_entries(
+                    remainder.substr(pos + marker.size()))) {
+                    append_history_entry(context, entry);
+                }
+                found_inline_history = true;
+                in_history = true;
+                break;
+            }
+            if (!found_inline_history) {
+                context.task = remainder;
+            }
+        } else if (trimmed == u8"Уже выполненные действия:" ||
+                   trimmed == "Completed actions:" ||
+                   trimmed == "History:" ||
+                   starts_with_literal(trimmed, "History (old->new):")) {
             in_history = true;
+            const auto marker_pos = trimmed.find(':');
+            if (marker_pos != std::string::npos && marker_pos + 1 < trimmed.size()) {
+                for (const auto & entry : split_inline_history_entries(trimmed.substr(marker_pos + 1))) {
+                    append_history_entry(context, entry);
+                }
+            }
         } else if (in_history) {
             if (starts_with_literal(trimmed, u8"Определи следующее действие") ||
                 starts_with_literal(trimmed, "Determine the next action") ||
                 starts_with_literal(trimmed, "Next action")) {
                 in_history = false;
             } else if (!trimmed.empty() && std::isdigit(static_cast<unsigned char>(trimmed[0])) != 0) {
-                const auto action_line = trim_action_prefix(trimmed);
-                char action_code = 'a';
-                if (action_line.find("set_text") != std::string::npos) {
-                    action_code = 't';
-                } else if (action_line.find("click") != std::string::npos) {
-                    action_code = 'c';
-                } else if (action_line.find("back") != std::string::npos ||
-                           action_line.find(u8"назад") != std::string::npos) {
-                    action_code = 'b';
-                }
-                context.history_tokens.emplace_back(1, action_code);
-                if (const auto parsed_id = extract_history_id(action_line)) {
-                    context.history_ids.push_back(*parsed_id);
-                }
-
-                const auto label = compact_history_label(action_line, action_code);
-                if (!label.empty()) {
-                    context.history_labels.push_back(label);
-                }
+                append_history_entry(context, trimmed);
             }
         }
 
@@ -750,60 +979,112 @@ prompt_context parse_prompt_context(const std::string & raw_prompt) {
             context.repeated_tail_same_id += 1;
         }
     }
+    if (!context.history_signatures.empty()) {
+        const auto & last_signature = context.history_signatures.back();
+        for (auto it = context.history_signatures.rbegin(); it != context.history_signatures.rend(); ++it) {
+            if (*it != last_signature) {
+                break;
+            }
+            context.repeated_tail_same_signature += 1;
+        }
+    }
 
     return context;
 }
 
-std::string build_user_content(
-    const std::string & user_prompt,
+std::string compact_single_line(const std::string & raw, size_t max_len = 80) {
+    std::string compact;
+    compact.reserve(raw.size());
+    bool prev_space = false;
+    for (const char ch : raw) {
+        const bool is_space = std::isspace(static_cast<unsigned char>(ch)) != 0;
+        if (is_space) {
+            if (!prev_space) {
+                compact.push_back(' ');
+                prev_space = true;
+            }
+            continue;
+        }
+        compact.push_back(ch);
+        prev_space = false;
+    }
+    compact = trim_copy(compact);
+    if (compact.size() > max_len) {
+        compact.resize(max_len);
+    }
+    return compact;
+}
+
+std::string join_compact(const std::vector<std::string> & items, const char * separator, size_t max_items = 0) {
+    std::string out;
+    size_t emitted = 0;
+    for (const auto & item : items) {
+        const auto compact = compact_single_line(item);
+        if (compact.empty()) {
+            continue;
+        }
+        if (max_items > 0 && emitted >= max_items) {
+            break;
+        }
+        if (!out.empty()) {
+            out += separator;
+        }
+        out += compact;
+        emitted += 1;
+    }
+    return out;
+}
+
+std::string build_user_content_from_context(
+    const prompt_context & context,
     const std::string & screen_name,
-    const std::string & toon
+    const std::string & toon,
+    const std::optional<extracted_steps_plan> & extracted_plan
 ) {
-    const auto context = parse_prompt_context(user_prompt);
     std::string user_content;
-    user_content.reserve(user_prompt.size() + screen_name.size() + toon.size() + 64);
+    user_content.reserve(context.task.size() + screen_name.size() + toon.size() + 192);
     user_content += "Task: ";
     user_content += context.task;
-    if (!context.history_tokens.empty()) {
-        user_content += "\nHist:";
-        const size_t keep = 6;
-        const size_t start = context.history_tokens.size() > keep ? context.history_tokens.size() - keep : 0;
-        if (start > 0) {
-            user_content += " ...";
+    user_content += "\nApp: ";
+    user_content += screen_name;
+    user_content += "\nAppShort: ";
+    user_content += shorten_app_name(screen_name);
+    if (extracted_plan.has_value()) {
+        if (!trim_copy(extracted_plan->goal).empty()) {
+            user_content += "\nPlanGoal: ";
+            user_content += compact_single_line(extracted_plan->goal, 96);
         }
-        for (size_t i = start; i < context.history_tokens.size(); ++i) {
-            if (i != start) {
-                user_content += ">";
+        const auto apps_line = join_compact(extracted_plan->apps, ",", 3);
+        if (!apps_line.empty()) {
+            user_content += "\nExpectedApps: ";
+            user_content += apps_line;
+        }
+        if (!extracted_plan->steps.empty()) {
+            user_content += "\nPlanSteps:";
+            for (size_t i = 0; i < extracted_plan->steps.size() && i < 4; ++i) {
+                user_content += "\n";
+                user_content += std::to_string(i + 1);
+                user_content += ") ";
+                user_content += compact_single_line(extracted_plan->steps[i], 96);
             }
-            user_content += context.history_tokens[i];
         }
     }
-    if (!context.history_labels.empty()) {
-        user_content += "\nHistLbl:";
-        const size_t keep = 4;
-        const size_t start = context.history_labels.size() > keep ? context.history_labels.size() - keep : 0;
-        if (start > 0) {
-            user_content += " ...";
-        }
-        for (size_t i = start; i < context.history_labels.size(); ++i) {
-            if (i != start) {
-                user_content += ">";
-            }
-            user_content += context.history_labels[i];
+    if (!context.history_entries.empty()) {
+        user_content += "\nHistoryFull:";
+        for (size_t i = 0; i < context.history_entries.size(); ++i) {
+            user_content += "\n";
+            user_content += std::to_string(i + 1);
+            user_content += ". ";
+            user_content += context.history_entries[i];
         }
     }
-    if (!context.history_ids.empty()) {
-        user_content += "\nHistId:";
-        const size_t keep = 6;
-        const size_t start = context.history_ids.size() > keep ? context.history_ids.size() - keep : 0;
-        if (start > 0) {
-            user_content += " ...";
-        }
-        for (size_t i = start; i < context.history_ids.size(); ++i) {
-            if (i != start) {
+    if (!context.history_signatures.empty()) {
+        user_content += "\nHistSig:";
+        for (size_t i = 0; i < context.history_signatures.size(); ++i) {
+            if (i != 0) {
                 user_content += ">";
             }
-            user_content += std::to_string(context.history_ids[i]);
+            user_content += context.history_signatures[i];
         }
     }
     user_content += "\nStep:";
@@ -822,18 +1103,24 @@ std::string build_user_content(
         user_content += "x";
         user_content += std::to_string(context.repeated_tail_same_id);
     }
-    user_content += "\nApp: ";
-    user_content += screen_name;
-    user_content += "\nAppShort: ";
-    const auto dot_pos = screen_name.find_last_of('.');
-    if (dot_pos != std::string::npos && dot_pos + 1 < screen_name.size()) {
-        user_content += screen_name.substr(dot_pos + 1);
-    } else {
-        user_content += screen_name;
+    if (context.repeated_tail_same_signature >= 2 && !context.history_signatures.empty()) {
+        user_content += "\nRepeatSig:";
+        user_content += context.history_signatures.back();
+        user_content += "x";
+        user_content += std::to_string(context.repeated_tail_same_signature);
     }
     user_content += "\nUI:\n";
     user_content += toon;
     return user_content;
+}
+
+std::string build_user_content(
+    const std::string & user_prompt,
+    const std::string & screen_name,
+    const std::string & toon
+) {
+    const auto context = parse_prompt_context(user_prompt);
+    return build_user_content_from_context(context, screen_name, toon, std::nullopt);
 }
 
 bool contains_any_substring(const std::string & haystack, const std::vector<std::string> & needles) {
@@ -1054,6 +1341,42 @@ void log_multiline_toon(const std::string & toon, int step_number) {
     LOKI_LOGI("STEP %d TOON END", step_number);
 }
 
+std::string build_steps_extractor_grammar() {
+    std::string grammar;
+    grammar += "root ::= ws \"{\" ws \"\\\"goal\\\"\" ws \":\" ws json-string ws \",\" ws \"\\\"apps\\\"\" ws \":\" ws apps-array ws \",\" ws \"\\\"steps\\\"\" ws \":\" ws steps-array ws \"}\" ws\n";
+    grammar += "apps-array ::= \"[\" ws \"]\" | \"[\" ws json-string ws \"]\" | \"[\" ws json-string ws \",\" ws json-string ws \"]\" | \"[\" ws json-string ws \",\" ws json-string ws \",\" ws json-string ws \"]\"\n";
+    grammar += "steps-array ::= \"[\" ws json-string ws \"]\" | \"[\" ws json-string ws \",\" ws json-string ws \"]\" | \"[\" ws json-string ws \",\" ws json-string ws \",\" ws json-string ws \"]\" | \"[\" ws json-string ws \",\" ws json-string ws \",\" ws json-string ws \",\" ws json-string ws \"]\"\n";
+    grammar += "json-string ::= \"\\\"\" json-char* \"\\\"\"\n";
+    grammar += "json-char ::= [^\"\\\\\\x0A\\x0D] | escape\n";
+    grammar += "escape ::= \"\\\\\" ([\"\\\\/bfnrt] | (\"u\" hex hex hex hex))\n";
+    grammar += "hex ::= [0-9a-fA-F]\n";
+    grammar += "ws ::= | \" \" ws | \"\\n\" ws | \"\\r\" ws | \"\\t\" ws\n";
+    return grammar;
+}
+
+std::string build_steps_extractor_user_content(
+    const prompt_context & context,
+    const std::string & screen_name
+) {
+    std::string out;
+    out.reserve(context.task.size() + screen_name.size() + 128);
+    out += "Task: ";
+    out += context.task;
+    out += "\nApp: ";
+    out += screen_name;
+    out += "\nHistoryRecent:";
+    if (context.history_entries.empty()) {
+        out += " none";
+    } else {
+        const size_t begin = context.history_entries.size() > 2 ? context.history_entries.size() - 2 : 0;
+        for (size_t i = begin; i < context.history_entries.size(); ++i) {
+            out += "\n- ";
+            out += compact_single_line(context.history_entries[i], 88);
+        }
+    }
+    return out;
+}
+
 json build_chat_request_payload(
     const std::string & user_prompt,
     const std::string & screen_name,
@@ -1140,6 +1463,63 @@ std::string extract_message_content(const json & root) {
     }
 
     return extract_textual_content(*content_it);
+}
+
+std::vector<std::string> parse_compact_string_array(
+    const json & value,
+    size_t max_items,
+    size_t max_item_len
+) {
+    std::vector<std::string> out;
+    if (!value.is_array()) {
+        return out;
+    }
+
+    for (const auto & item : value) {
+        if (!item.is_string()) {
+            continue;
+        }
+        const auto compact = compact_single_line(item.get<std::string>(), max_item_len);
+        if (compact.empty()) {
+            continue;
+        }
+        out.push_back(compact);
+        if (out.size() >= max_items) {
+            break;
+        }
+    }
+    return out;
+}
+
+std::optional<extracted_steps_plan> parse_steps_extractor_content(const std::string & content) {
+    const auto trimmed = trim_copy(content);
+    if (trimmed.empty()) {
+        return std::nullopt;
+    }
+
+    const auto parsed = json::parse(trimmed);
+    if (!parsed.is_object()) {
+        return std::nullopt;
+    }
+
+    const auto goal_it = parsed.find("goal");
+    const auto steps_it = parsed.find("steps");
+    if (goal_it == parsed.end() || !goal_it->is_string() || steps_it == parsed.end()) {
+        return std::nullopt;
+    }
+
+    extracted_steps_plan plan;
+    plan.goal = compact_single_line(goal_it->get<std::string>(), 96);
+    plan.steps = parse_compact_string_array(*steps_it, 4, 96);
+    if (plan.goal.empty() || plan.steps.empty()) {
+        return std::nullopt;
+    }
+
+    const auto apps_it = parsed.find("apps");
+    if (apps_it != parsed.end()) {
+        plan.apps = parse_compact_string_array(*apps_it, 3, 32);
+    }
+    return plan;
 }
 
 int32_t parse_action_id_field(const json & value) {
@@ -1303,8 +1683,12 @@ model_action_response parse_action_response_json(const json & parsed) {
             result.action_type = "click";
             return result;
         }
+        if (lowered_action == "scroll_forward" || lowered_action == "scroll_backward") {
+            result.action_type = lowered_action;
+            return result;
+        }
         if (lowered_action != "set_text") {
-            throw std::runtime_error("model response action must be click, set_text, or back");
+            throw std::runtime_error("model response action must be click, set_text, scroll_forward, scroll_backward, or back");
         }
 
         const auto text_it = parsed.find("text");
@@ -1349,8 +1733,11 @@ model_action_response parse_action_response_json(const json & parsed) {
     if (result.action_type == "click") {
         return result;
     }
+    if (result.action_type == "scroll_forward" || result.action_type == "scroll_backward") {
+        return result;
+    }
     if (result.action_type != "set_text") {
-        throw std::runtime_error("model response action must be click or set_text");
+        throw std::runtime_error("model response action must be click, set_text, scroll_forward, or scroll_backward");
     }
 
     const auto text_it = parsed.find("text");
@@ -1469,6 +1856,19 @@ static bool prompt_requests_state_change(const std::string & user_prompt) {
         u8"включи", u8"включить", u8"выключи", u8"выключить",
         u8"активируй", u8"деактивируй", u8"переключи", u8"переключить",
         u8"отметь", u8"сними отметку", u8"галочка"
+    };
+
+    return contains_any_substring(lowered_ascii, english_keywords) ||
+        contains_any_substring(user_prompt, russian_keywords);
+}
+
+static bool prompt_requests_scroll_intent(const std::string & user_prompt) {
+    const auto lowered_ascii = to_lower_ascii(user_prompt);
+    const std::vector<std::string> english_keywords = {
+        "scroll", "swipe", "more results", "more items", "next items", "show more", "list down", "list up"
+    };
+    const std::vector<std::string> russian_keywords = {
+        u8"скролл", u8"пролист", u8"листай", u8"свайп", u8"покажи еще", u8"ниже", u8"выше"
     };
 
     return contains_any_substring(lowered_ascii, english_keywords) ||
@@ -1611,6 +2011,96 @@ std::string find_path_json_by_id(const json & grouped, int32_t selected_id) {
         }
     }
     return "";
+}
+
+static const json * find_grouped_item_by_id(const json & grouped, int32_t selected_id) {
+    for (auto it = grouped.begin(); it != grouped.end(); ++it) {
+        if (!it.value().is_array()) {
+            continue;
+        }
+        for (const auto & item : it.value()) {
+            const auto id_it = item.find("id");
+            if (id_it != item.end() &&
+                id_it->is_number_integer() &&
+                id_it->get<int32_t>() == selected_id) {
+                return &item;
+            }
+        }
+    }
+    return nullptr;
+}
+
+static std::string grouped_item_label(const json & item) {
+    const auto text = normalized_field(item, "text");
+    const auto content_desc = normalized_field(item, "contentDesc");
+    if (text.has_value() && content_desc.has_value() && *text != *content_desc) {
+        return *text + ":" + *content_desc;
+    }
+    if (text.has_value()) {
+        return *text;
+    }
+    if (content_desc.has_value()) {
+        return *content_desc;
+    }
+    if (const auto class_name = normalized_field(item, "class")) {
+        return *class_name;
+    }
+    return "";
+}
+
+static std::string build_candidate_signature(
+    const model_action_response & response,
+    const json & grouped,
+    const std::string & screen_name
+) {
+    if (response.done) {
+        return "d#-1@" + shorten_app_name(screen_name);
+    }
+    char action_code = 'a';
+    if (response.action_type == "click") {
+        action_code = 'c';
+    } else if (response.action_type == "set_text") {
+        action_code = 't';
+    } else if (response.action_type == "back") {
+        action_code = 'b';
+    } else if (response.action_type == "scroll_forward") {
+        action_code = 'f';
+    } else if (response.action_type == "scroll_backward") {
+        action_code = 'r';
+    }
+
+    std::optional<int32_t> id;
+    std::optional<std::string> label;
+    if (response.selected_id >= 0) {
+        id = response.selected_id;
+        if (const auto * item = find_grouped_item_by_id(grouped, response.selected_id)) {
+            const auto item_label = grouped_item_label(*item);
+            if (!item_label.empty()) {
+                label = item_label;
+            }
+        }
+    } else if (response.action_type == "back") {
+        label = "back";
+    }
+    return build_history_signature(action_code, id, label, shorten_app_name(screen_name));
+}
+
+static bool history_prefers_scroll_backward_first(const prompt_context & context, const std::string & screen_name) {
+    const auto current_app = shorten_app_name(screen_name);
+    for (auto it = context.history_signatures.rbegin(); it != context.history_signatures.rend(); ++it) {
+        const auto & signature = *it;
+        if (!current_app.empty() && signature.find("@" + current_app) == std::string::npos) {
+            continue;
+        }
+        if (!signature.empty() && signature[0] == 'f') {
+            return false;
+        }
+        if (!signature.empty() && signature[0] == 'r') {
+            return false;
+        }
+        break;
+    }
+    return true;
 }
 
 static std::vector<int32_t> collect_candidate_ids(const json & grouped) {
@@ -1854,7 +2344,7 @@ static done_validation_result validate_done_response(
 
     const auto task_terms = extract_task_match_terms(task);
     const bool state_task = prompt_requests_state_change(task);
-    const bool repeat_id_loop = context.repeated_tail_same_id >= 2;
+    const bool repeat_id_loop = context.repeated_tail_same_id >= 2 || context.repeated_tail_same_signature >= 2;
     const bool has_progress_history = !context.history_ids.empty();
 
     if (repeat_id_loop) {
@@ -2080,13 +2570,21 @@ static std::string build_id_rule(const std::vector<int32_t> & ids) {
 std::string build_action_response_grammar(
     const std::vector<int32_t> & ids,
     const std::vector<int32_t> & editable_ids,
+    const std::vector<int32_t> & scrollable_ids,
     bool allow_click,
-    bool allow_back
+    bool allow_back,
+    bool allow_scroll,
+    bool allow_done
 ) {
     const std::string click_id_rule = build_id_rule(ids);
     const std::string editable_id_rule = build_id_rule(editable_ids);
+    const std::string scroll_id_rule = build_id_rule(scrollable_ids);
     std::string grammar;
-    grammar += "root ::= ws (done-response | no-match-response";
+    grammar += "root ::= ws (";
+    if (allow_done) {
+        grammar += "done-response | ";
+    }
+    grammar += "no-match-response";
     if (allow_back) {
         grammar += " | back-response";
     }
@@ -2096,8 +2594,13 @@ std::string build_action_response_grammar(
     if (!editable_ids.empty()) {
         grammar += " | set-text-response";
     }
+    if (allow_scroll && !scrollable_ids.empty()) {
+        grammar += " | scroll-forward-response | scroll-backward-response";
+    }
     grammar += ") ws\n";
-    grammar += "done-response ::= \"{\" ws \"\\\"done\\\"\" ws \":\" ws \"true\" ws \"}\"\n";
+    if (allow_done) {
+        grammar += "done-response ::= \"{\" ws \"\\\"done\\\"\" ws \":\" ws \"true\" ws \"}\"\n";
+    }
     grammar += "no-match-response ::= \"{\" ws \"\\\"id\\\"\" ws \":\" ws \"-1\" ws \"}\"\n";
     if (allow_back) {
         grammar += "back-response ::= \"{\" ws \"\\\"action_type\\\"\" ws \":\" ws \"\\\"back\\\"\" ws \",\" ws \"\\\"done\\\"\" ws \":\" ws \"false\" ws \"}\"\n";
@@ -2112,6 +2615,13 @@ std::string build_action_response_grammar(
         grammar += "set-text-response ::= \"{\" ws \"\\\"id\\\"\" ws \":\" ws set-text-id-value ws \",\" ws \"\\\"action\\\"\" ws \":\" ws \"\\\"set_text\\\"\" ws \",\" ws \"\\\"text\\\"\" ws \":\" ws json-string ws \",\" ws \"\\\"done\\\"\" ws \":\" ws \"false\" ws \"}\"\n";
         grammar += "set-text-id-value ::= ";
         grammar += editable_id_rule;
+        grammar += "\n";
+    }
+    if (allow_scroll && !scrollable_ids.empty()) {
+        grammar += "scroll-forward-response ::= \"{\" ws \"\\\"id\\\"\" ws \":\" ws scroll-id-value ws \",\" ws \"\\\"action\\\"\" ws \":\" ws \"\\\"scroll_forward\\\"\" ws \",\" ws \"\\\"done\\\"\" ws \":\" ws \"false\" ws \"}\"\n";
+        grammar += "scroll-backward-response ::= \"{\" ws \"\\\"id\\\"\" ws \":\" ws scroll-id-value ws \",\" ws \"\\\"action\\\"\" ws \":\" ws \"\\\"scroll_backward\\\"\" ws \",\" ws \"\\\"done\\\"\" ws \":\" ws \"false\" ws \"}\"\n";
+        grammar += "scroll-id-value ::= ";
+        grammar += scroll_id_rule;
         grammar += "\n";
     }
     grammar += "json-string ::= \"\\\"\" json-char* \"\\\"\"\n";
@@ -2149,15 +2659,26 @@ void validate_action_response_for_grouped(const json & grouped, const model_acti
     }
 
     if (response.selected_id < 0) {
-        throw std::runtime_error("model response selected id must be non-negative for click/set_text");
+        throw std::runtime_error("model response selected id must be non-negative for click/set_text/scroll");
     }
 
     if (response.action_type == "click") {
         return;
     }
 
+    if (response.action_type == "scroll_forward" || response.action_type == "scroll_backward") {
+        if (response.text.has_value() && !trim_copy(*response.text).empty()) {
+            throw std::runtime_error("model response scroll action must not include text");
+        }
+        const auto scrollable_ids = collect_candidate_ids_for_attr(grouped, "scrollable");
+        if (std::find(scrollable_ids.begin(), scrollable_ids.end(), response.selected_id) == scrollable_ids.end()) {
+            throw std::runtime_error("model returned scroll action for non-scrollable id");
+        }
+        return;
+    }
+
     if (response.action_type != "set_text") {
-        throw std::runtime_error("model response action must be click, set_text, or back");
+        throw std::runtime_error("model response action must be click, set_text, scroll_forward, scroll_backward, or back");
     }
 
     if (!response.text.has_value() || trim_copy(*response.text).empty()) {
@@ -2219,11 +2740,12 @@ loki_action_result_t * make_result_global(
 }
 
 loki_action::json build_chat_request_payload_global(
-    const std::string & user_prompt,
+    const loki_action::prompt_context & context,
     const std::string & screen_name,
     const std::string & toon,
     const std::string & grammar,
-    const char * system_prompt
+    const char * system_prompt,
+    const std::optional<loki_action::extracted_steps_plan> & extracted_plan
 ) {
     return loki_action::json{
         {"model", "default"},
@@ -2232,7 +2754,10 @@ loki_action::json build_chat_request_payload_global(
                 {"role", "system"},
                 {"content", system_prompt},
             },
-            loki_action::json{{"role", "user"}, {"content", loki_action::build_user_content(user_prompt, screen_name, toon)}},
+            loki_action::json{
+                {"role", "user"},
+                {"content", loki_action::build_user_content_from_context(context, screen_name, toon, extracted_plan)}
+            },
         })},
         {"grammar", grammar},
         {"cache_prompt", true},
@@ -2244,6 +2769,97 @@ loki_action::json build_chat_request_payload_global(
         {"min_p", 0.0},
         {"repeat_penalty", 1.0},
     };
+}
+
+loki_action::json build_step_extractor_payload_global(
+    const loki_action::prompt_context & context,
+    const std::string & screen_name
+) {
+    return loki_action::json{
+        {"model", "default"},
+        {"messages", loki_action::json::array({
+            loki_action::json{
+                {"role", "system"},
+                {"content", loki_action::STEP_EXTRACTOR_PROMPT},
+            },
+            loki_action::json{
+                {"role", "user"},
+                {"content", loki_action::build_steps_extractor_user_content(context, screen_name)}
+            },
+        })},
+        {"grammar", loki_action::build_steps_extractor_grammar()},
+        {"cache_prompt", true},
+        {"max_tokens", 96},
+        {"stream", false},
+        {"temperature", 0.0},
+        {"top_k", 1},
+        {"top_p", 1.0},
+        {"min_p", 0.0},
+        {"repeat_penalty", 1.0},
+    };
+}
+
+std::optional<loki_action::extracted_steps_plan> run_steps_extractor_global(
+    const loki_action::prompt_context & context,
+    const std::string & screen_name,
+    const std::string & host_copy,
+    int32_t resolved_port,
+    std::string & stage,
+    std::string & last_model_response
+) {
+    if (loki_action::trim_copy(context.task).empty() || context.step_number > 2) {
+        return std::nullopt;
+    }
+
+    try {
+        stage = "prepare_http:steps-extractor";
+        const auto payload = build_step_extractor_payload_global(context, screen_name);
+        const auto payload_body = payload.dump();
+
+        stage = "http_post:steps-extractor";
+        const auto http_result = loki_action::post_json_via_socket(
+            host_copy,
+            resolved_port,
+            "/v1/chat/completions",
+            payload_body,
+            5,
+            120,
+            5
+        );
+        if (!http_result.ok || http_result.status != 200) {
+            LOKI_LOGI(
+                "STEP %d PLAN: extractor skipped, status=%d ok=%s",
+                context.step_number,
+                http_result.status,
+                http_result.ok ? "true" : "false"
+            );
+            return std::nullopt;
+        }
+
+        stage = "parse_model_response:steps-extractor";
+        last_model_response = http_result.body;
+        const auto root = loki_action::json::parse(http_result.body);
+        const auto content = loki_action::extract_message_content(root);
+        const auto parsed = loki_action::parse_steps_extractor_content(content);
+        if (!parsed.has_value()) {
+            LOKI_LOGI("STEP %d PLAN: extractor returned no usable plan", context.step_number);
+            return std::nullopt;
+        }
+
+        const auto apps_line = loki_action::join_compact(parsed->apps, ",", 3);
+        const auto steps_line = loki_action::join_compact(parsed->steps, " | ", 4);
+        LOKI_LOGI(
+            "STEP %d PLAN: goal=\"%s\" apps=\"%s\" steps=\"%s\"",
+            context.step_number,
+            loki_action::truncate_for_log(loki_action::escape_for_log(parsed->goal), 120).c_str(),
+            loki_action::truncate_for_log(loki_action::escape_for_log(apps_line), 120).c_str(),
+            loki_action::truncate_for_log(loki_action::escape_for_log(steps_line), 220).c_str()
+        );
+        return parsed;
+    } catch (const std::exception & e) {
+        LOKI_LOGI("STEP %d PLAN: extractor failed: %s", context.step_number, e.what());
+        return std::nullopt;
+    }
 }
 
 } // namespace
@@ -2305,6 +2921,7 @@ LOKI_ACTION_API loki_action_result_t * loki_action_resolve_path(
         loki_action::log_multiline_toon(full_toon, prompt_context.step_number);
         const auto candidate_ids = loki_action::collect_candidate_ids(grouped);
         const auto editable_candidate_ids = loki_action::collect_candidate_ids_for_attr(grouped, "editable");
+        const auto scrollable_candidate_ids = loki_action::collect_candidate_ids_for_attr(grouped, "scrollable");
         const auto state_candidate_ids = loki_action::collect_state_candidate_ids(grouped);
         const auto desired_state = loki_action::detect_desired_state(prompt_context.task);
         const auto task_match_terms = loki_action::extract_task_match_terms(prompt_context.task);
@@ -2335,14 +2952,25 @@ LOKI_ACTION_API loki_action_result_t * loki_action_resolve_path(
             screen_name_it != screen.end() && screen_name_it->is_string()
                 ? screen_name_it->get<std::string>()
                 : "unknown";
+        const auto extracted_plan = run_steps_extractor_global(
+            prompt_context,
+            screen_name,
+            host_copy,
+            resolved_port,
+            stage,
+            last_model_response
+        );
 
         auto run_model_pass = [&](const char * pass_name,
                                   const char * system_prompt,
                                   const std::vector<int32_t> & pass_ids,
                                   const std::vector<int32_t> & pass_editable_ids,
+                                  const std::vector<int32_t> & pass_scrollable_ids,
                                   bool allow_click,
                                   bool allow_back = false,
-                                  bool allow_empty_candidates = false) -> std::optional<loki_action::model_action_response> {
+                                  bool allow_scroll = false,
+                                  bool allow_empty_candidates = false,
+                                  bool allow_done = false) -> std::optional<loki_action::model_action_response> {
             if (pass_ids.empty() && !allow_empty_candidates) {
                 LOKI_LOGI("STEP %d MODEL PASS: %s skipped (no candidates)", prompt_context.step_number, pass_name);
                 return std::nullopt;
@@ -2351,18 +2979,24 @@ LOKI_ACTION_API loki_action_result_t * loki_action_resolve_path(
             const std::string grammar = loki_action::build_action_response_grammar(
                 pass_ids,
                 pass_editable_ids,
+                pass_scrollable_ids,
                 allow_click,
-                allow_back
+                allow_back,
+                allow_scroll,
+                allow_done
             );
 
             LOKI_LOGI(
-                "STEP %d MODEL PASS: %s ids=%zu editable_ids=%zu allow_click=%s allow_back=%s",
+                "STEP %d MODEL PASS: %s ids=%zu editable_ids=%zu scrollable_ids=%zu allow_click=%s allow_back=%s allow_scroll=%s allow_done=%s",
                 prompt_context.step_number,
                 pass_name,
                 pass_ids.size(),
                 pass_editable_ids.size(),
+                pass_scrollable_ids.size(),
                 allow_click ? "true" : "false",
-                allow_back ? "true" : "false"
+                allow_back ? "true" : "false",
+                allow_scroll ? "true" : "false",
+                allow_done ? "true" : "false"
             );
             LOKI_LOGI(
                 "STEP %d MODEL GRAMMAR: \"%s\"",
@@ -2372,11 +3006,12 @@ LOKI_ACTION_API loki_action_result_t * loki_action_resolve_path(
 
             stage = std::string("prepare_http:") + pass_name;
             const auto payload = build_chat_request_payload_global(
-                user_prompt_copy,
+                prompt_context,
                 screen_name,
                 full_toon,
                 grammar,
-                system_prompt
+                system_prompt,
+                extracted_plan
             );
             const std::string payload_body = payload.dump();
             LOKI_LOGI(
@@ -2457,36 +3092,58 @@ LOKI_ACTION_API loki_action_result_t * loki_action_resolve_path(
         const bool prefers_text_edit = loki_action::prompt_requests_text_edit(prompt_context.task);
         const bool prefers_lookup_input = loki_action::prompt_requests_lookup_input(prompt_context.task);
         const bool prefers_back_navigation = loki_action::prompt_requests_back_navigation(prompt_context.task);
+        const bool prefers_scroll_intent = loki_action::prompt_requests_scroll_intent(prompt_context.task);
         const bool prefers_state_action =
             loki_action::prompt_requests_state_change(prompt_context.task) && !state_candidate_ids.empty();
+        const bool history_indicates_stuck =
+            prompt_context.has_loop_hint ||
+            prompt_context.repeated_tail_same_signature >= 1 ||
+            prompt_context.repeated_tail_same_id >= 1 ||
+            prompt_context.repeated_tail_clicks >= 3;
         const bool prefers_editable_input = !editable_candidate_ids.empty() && (
             prefers_text_edit ||
             (has_searchable_editable && prefers_lookup_input) ||
             (has_searchable_editable && prompt_context.repeated_tail_clicks >= 2)
         ) && !has_direct_click_match && !prefers_state_action;
+        const bool should_consider_scroll =
+            !scrollable_candidate_ids.empty() &&
+            !prefers_back_navigation &&
+            !prefers_state_action &&
+            !has_direct_click_match &&
+            !prefers_text_edit &&
+            !prefers_editable_input &&
+            (prefers_scroll_intent || history_indicates_stuck);
+        const bool prefer_scroll_backward_first =
+            should_consider_scroll &&
+            loki_action::history_prefers_scroll_backward_first(prompt_context, screen_name);
         LOKI_LOGI(
-            "STEP %d PROMPT MODE: prefers_text_edit=%s prefers_lookup_input=%s prefers_back_navigation=%s prefers_state_action=%s desired_state=%d prefers_editable_input=%s direct_click_match=%s direct_click_ids=%zu state_candidates=%zu state_action_candidates=%zu searchable_editable=%s editable_candidates=%zu total_candidates=%zu history=%zu repeat_same_id=%d",
+            "STEP %d PROMPT MODE: prefers_text_edit=%s prefers_lookup_input=%s prefers_back_navigation=%s prefers_scroll_intent=%s prefers_state_action=%s desired_state=%d prefers_editable_input=%s direct_click_match=%s direct_click_ids=%zu should_consider_scroll=%s prefer_scroll_backward_first=%s history_stuck=%s scrollable_candidates=%zu state_candidates=%zu state_action_candidates=%zu searchable_editable=%s editable_candidates=%zu total_candidates=%zu history=%zu repeat_same_id=%d repeat_same_sig=%d",
             prompt_context.step_number,
             prefers_text_edit ? "true" : "false",
             prefers_lookup_input ? "true" : "false",
             prefers_back_navigation ? "true" : "false",
+            prefers_scroll_intent ? "true" : "false",
             prefers_state_action ? "true" : "false",
             static_cast<int>(desired_state),
             prefers_editable_input ? "true" : "false",
             has_direct_click_match ? "true" : "false",
             direct_click_candidate_ids.size(),
+            should_consider_scroll ? "true" : "false",
+            prefer_scroll_backward_first ? "true" : "false",
+            history_indicates_stuck ? "true" : "false",
+            scrollable_candidate_ids.size(),
             state_candidate_ids.size(),
             state_action_candidate_ids.size(),
             has_searchable_editable ? "true" : "false",
             editable_candidate_ids.size(),
             candidate_ids.size(),
             prompt_context.history_tokens.size(),
-            prompt_context.repeated_tail_same_id
+            prompt_context.repeated_tail_same_id,
+            prompt_context.repeated_tail_same_signature
         );
 
         auto try_accept_model_response = [&](const loki_action::model_action_response & candidate,
                                              const char * pass_name) -> bool {
-            (void) pass_name;
             if (candidate.done) {
                 const auto done_check = loki_action::validate_done_response(grouped, prompt_context.task, prompt_context);
                 if (!done_check.accepted) {
@@ -2508,18 +3165,41 @@ LOKI_ACTION_API loki_action_result_t * loki_action_resolve_path(
             }
 
             if (!candidate.done &&
-                candidate.selected_id >= 0 &&
-                !prompt_context.history_ids.empty() &&
-                prompt_context.history_ids.back() == candidate.selected_id &&
-                prompt_context.repeated_tail_same_id >= 1) {
+                std::strcmp(pass_name, "scroll-up-priority") == 0 &&
+                candidate.action_type != "scroll_backward" &&
+                candidate.selected_id >= 0) {
                 LOKI_LOGI(
-                    "STEP %d ACTION REJECTED: pass=%s reason=repeat-same-id id=%d x%d",
+                    "STEP %d ACTION REJECTED: pass=%s reason=expected-scroll-backward got=%s",
                     prompt_context.step_number,
                     pass_name,
-                    candidate.selected_id,
-                    prompt_context.repeated_tail_same_id + 1
+                    candidate.action_type.c_str()
                 );
                 return false;
+            }
+            if (!candidate.done &&
+                std::strcmp(pass_name, "scroll-down-priority") == 0 &&
+                candidate.action_type != "scroll_forward" &&
+                candidate.selected_id >= 0) {
+                LOKI_LOGI(
+                    "STEP %d ACTION REJECTED: pass=%s reason=expected-scroll-forward got=%s",
+                    prompt_context.step_number,
+                    pass_name,
+                    candidate.action_type.c_str()
+                );
+                return false;
+            }
+
+            if (!candidate.done && !prompt_context.history_signatures.empty()) {
+                const auto candidate_signature = loki_action::build_candidate_signature(candidate, grouped, screen_name);
+                if (candidate_signature == prompt_context.history_signatures.back()) {
+                    LOKI_LOGI(
+                        "STEP %d ACTION REJECTED: pass=%s reason=repeat-same-signature sig=%s",
+                        prompt_context.step_number,
+                        pass_name,
+                        candidate_signature.c_str()
+                    );
+                    return false;
+                }
             }
 
             action_response = candidate;
@@ -2534,8 +3214,11 @@ LOKI_ACTION_API loki_action_result_t * loki_action_resolve_path(
                     loki_action::DONE_CHECK_PROMPT,
                     {},
                     {},
+                    {},
                     false,
                     false,
+                    false,
+                    true,
                     true
                 );
                 if (done_check_response.has_value() && done_check_response->done) {
@@ -2551,8 +3234,10 @@ LOKI_ACTION_API loki_action_result_t * loki_action_resolve_path(
                     loki_action::STATE_PRIORITY_PROMPT,
                     state_ids_for_pass,
                     {},
+                    {},
                     true,
-                    prefers_back_navigation
+                    prefers_back_navigation,
+                    false
                 );
                 if (state_response.has_value() &&
                     (state_response->done || state_response->selected_id >= 0)) {
@@ -2566,8 +3251,10 @@ LOKI_ACTION_API loki_action_result_t * loki_action_resolve_path(
                     loki_action::DIRECT_CLICK_PRIORITY_PROMPT,
                     direct_click_candidate_ids,
                     {},
+                    {},
                     true,
-                    prefers_back_navigation
+                    prefers_back_navigation,
+                    false
                 );
                 if (direct_click_response.has_value() &&
                     (direct_click_response->done || direct_click_response->selected_id >= 0)) {
@@ -2581,10 +3268,45 @@ LOKI_ACTION_API loki_action_result_t * loki_action_resolve_path(
                     loki_action::EDITABLE_PRIORITY_PROMPT,
                     editable_candidate_ids,
                     editable_candidate_ids,
+                    {},
                     false
                 );
                 if (editable_response.has_value() && editable_response->selected_id >= 0) {
                     (void) try_accept_model_response(*editable_response, "editable-priority");
+                }
+            }
+
+            if (!has_action_response && should_consider_scroll && prefer_scroll_backward_first) {
+                const auto scroll_up_response = run_model_pass(
+                    "scroll-up-priority",
+                    loki_action::SCROLL_UP_PRIORITY_PROMPT,
+                    scrollable_candidate_ids,
+                    {},
+                    scrollable_candidate_ids,
+                    false,
+                    false,
+                    true
+                );
+                if (scroll_up_response.has_value() &&
+                    (scroll_up_response->done || scroll_up_response->selected_id >= 0)) {
+                    (void) try_accept_model_response(*scroll_up_response, "scroll-up-priority");
+                }
+            }
+
+            if (!has_action_response && should_consider_scroll && !prefer_scroll_backward_first) {
+                const auto scroll_down_response = run_model_pass(
+                    "scroll-down-priority",
+                    loki_action::SCROLL_DOWN_PRIORITY_PROMPT,
+                    scrollable_candidate_ids,
+                    {},
+                    scrollable_candidate_ids,
+                    false,
+                    false,
+                    true
+                );
+                if (scroll_down_response.has_value() &&
+                    (scroll_down_response->done || scroll_down_response->selected_id >= 0)) {
+                    (void) try_accept_model_response(*scroll_down_response, "scroll-down-priority");
                 }
             }
 
@@ -2601,8 +3323,10 @@ LOKI_ACTION_API loki_action_result_t * loki_action_resolve_path(
                     fallback_to_non_editable ? loki_action::CLICK_FALLBACK_PROMPT : loki_action::SYSTEM_PROMPT,
                     fallback_ids,
                     fallback_editable_ids,
+                    scrollable_candidate_ids,
                     true,
-                    prefers_back_navigation
+                    prefers_back_navigation,
+                    should_consider_scroll
                 );
                 if (fallback_response.has_value()) {
                     (void) try_accept_model_response(
@@ -2763,7 +3487,7 @@ LOKI_ACTION_API void loki_action_result_destroy(loki_action_result_t * result) {
 }
 
 LOKI_ACTION_API const char * loki_action_get_version(void) {
-    return "1.3.0";
+    return "1.3.9";
 }
 
 } // extern "C"
