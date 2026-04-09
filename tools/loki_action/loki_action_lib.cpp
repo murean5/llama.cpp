@@ -3469,7 +3469,7 @@ LOKI_ACTION_API void loki_action_result_destroy(loki_action_result_t * result) {
 }
 
 LOKI_ACTION_API const char * loki_action_get_version(void) {
-    return "1.3.9";
+    return "1.4.0";
 }
 
 } // extern "C"
