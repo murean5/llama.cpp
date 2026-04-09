@@ -2334,6 +2334,14 @@ static done_validation_result validate_done_response(
         return result;
     }
 
+    // If the agent has made 2+ actions without looping, trust the model's done signal.
+    // Small models struggle with complex done validation; progress history is the best signal.
+    if (context.history_tokens.size() >= 2) {
+        result.accepted = true;
+        result.reason = "progress history + model confidence";
+        return result;
+    }
+
     if (state_task) {
         const auto desired_state = detect_desired_state(task);
         const int checked_best = best_match_score_for_attr(grouped, "checked", task_terms);
@@ -3173,14 +3181,21 @@ LOKI_ACTION_API loki_action_result_t * loki_action_resolve_path(
 
             if (!candidate.done && !prompt_context.history_signatures.empty()) {
                 const auto candidate_signature = loki_action::build_candidate_signature(candidate, grouped, screen_name);
-                if (candidate_signature == prompt_context.history_signatures.back()) {
-                    LOKI_LOGI(
-                        "STEP %d ACTION REJECTED: pass=%s reason=repeat-same-signature sig=%s",
-                        prompt_context.step_number,
-                        pass_name,
-                        candidate_signature.c_str()
-                    );
-                    return false;
+                const size_t check_depth = std::min<size_t>(3, prompt_context.history_signatures.size());
+                for (size_t i = 0; i < check_depth; ++i) {
+                    const auto & past_sig = prompt_context.history_signatures[
+                        prompt_context.history_signatures.size() - 1 - i
+                    ];
+                    if (candidate_signature == past_sig) {
+                        LOKI_LOGI(
+                            "STEP %d ACTION REJECTED: pass=%s reason=repeat-signature-in-last-%zu sig=%s",
+                            prompt_context.step_number,
+                            pass_name,
+                            i + 1,
+                            candidate_signature.c_str()
+                        );
+                        return false;
+                    }
                 }
             }
 
