@@ -32,74 +32,59 @@ namespace loki_action {
 
 namespace {
 
-constexpr const char* SYSTEM_PROMPT = R"(Role: Android UI action planner.
-Input has Task, App/AppShort, HistoryFull/HistSig, and visible UI candidates.
-Return exactly one JSON object that matches the grammar. No extra text.
-
-Priorities:
-1) If final goal is visibly complete now, return {"done":true}.
-2) Prefer direct visible target.
-3) For search/input goals, if editable target is visible, use set_text and return only value to type.
-4) Use scroll only when no visible target fits and scrolling can reveal target.
-5) Use back only for explicit back/exit/mismatch intent.
-6) Avoid repeating recent failed signatures and ids.
-)";
+constexpr const char* SYSTEM_PROMPT = R"(Android UI agent. Pick one JSON action matching grammar.
+1) {"done":true} if goal visibly complete
+2) Click direct visible target
+3) set_text on editable for input goals (value only)
+4) scroll only if target not visible but reachable
+5) back only for explicit exit/back intent
+6) Never repeat last HistSig)";
 
 constexpr const char * EDITABLE_PRIORITY_PROMPT =
-    "Only editable ids are available. "
-    "Return {\"done\":true} only if final goal is already complete now. "
-    "Else return only {\"id\":<id>,\"action\":\"set_text\",\"text\":\"...\",\"done\":false}. "
-    "Text must be only the value to type. "
-    "Use {\"id\":-1} if no fit.";
+    "Editable ids only. "
+    "{\"done\":true} if complete. "
+    "Else {\"id\":<id>,\"action\":\"set_text\",\"text\":\"<value>\",\"done\":false}. "
+    "{\"id\":-1} if no fit.";
 
 constexpr const char * CLICK_FALLBACK_PROMPT =
-    "No editable match was chosen. "
-    "Return {\"done\":true} only if final goal is complete now. "
-    "Else return one action: click, scroll, or back (only for explicit back/exit intent). "
-    "Avoid repeating recent action signature. "
-    "Use {\"id\":-1} if no fit.";
+    "No editable fit. "
+    "{\"done\":true} if complete. "
+    "Else click, scroll, or back. "
+    "No signature repeat. "
+    "{\"id\":-1} if no fit.";
 
 constexpr const char * DIRECT_CLICK_PRIORITY_PROMPT =
-    "Clickable ids already match target by visible text/content. "
-    "Prefer direct click, not search. "
-    "Return {\"done\":true} only when goal is already complete. "
-    "Else return only {\"id\":<id>,\"action\":\"click\",\"done\":false}. "
-    "Use {\"id\":-1} if no fit.";
+    "Candidates match target text. Click, not search. "
+    "{\"done\":true} if complete. "
+    "Else {\"id\":<id>,\"action\":\"click\",\"done\":false}. "
+    "{\"id\":-1} if no fit.";
 
 constexpr const char * DONE_CHECK_PROMPT =
-    "Completion check only. "
-    "Return {\"done\":true} only if final goal is visibly satisfied now. "
-    "Else return {\"id\":-1}.";
+    "Completion check. "
+    "{\"done\":true} if goal visibly satisfied. "
+    "Else {\"id\":-1}.";
 
 constexpr const char * STATE_PRIORITY_PROMPT =
-    "State-change task detected. "
-    "Use checked/unchecked state first. "
-    "Return {\"done\":true} only if requested state is already satisfied now. "
-    "Else return only {\"id\":<id>,\"action\":\"click\",\"done\":false}. "
-    "Use {\"id\":-1} if no fit.";
+    "State-change task. Use checked/unchecked state. "
+    "{\"done\":true} if state satisfied. "
+    "Else {\"id\":<id>,\"action\":\"click\",\"done\":false}. "
+    "{\"id\":-1} if no fit.";
 
 constexpr const char * SCROLL_UP_PRIORITY_PROMPT =
-    "Target not visible and scroll is needed. "
-    "Do one upward scroll first. "
-    "Return only {\"id\":<id>,\"action\":\"scroll_backward\",\"done\":false}. "
-    "Use {\"id\":-1} if no fit.";
+    "Target not visible. One upward scroll. "
+    "{\"id\":<id>,\"action\":\"scroll_backward\",\"done\":false}. "
+    "{\"id\":-1} if no fit.";
 
 constexpr const char * SCROLL_DOWN_PRIORITY_PROMPT =
-    "Upward scroll already did not help enough. "
-    "Now do one downward scroll. "
-    "Return only {\"id\":<id>,\"action\":\"scroll_forward\",\"done\":false}. "
-    "Use {\"id\":-1} if no fit.";
+    "Upward scroll insufficient. One downward scroll. "
+    "{\"id\":<id>,\"action\":\"scroll_forward\",\"done\":false}. "
+    "{\"id\":-1} if no fit.";
 
-constexpr const char * STEP_EXTRACTOR_PROMPT = R"(Rewrite user task into short execution hints for Android UI agent.
-Return JSON only:
+constexpr const char * STEP_EXTRACTOR_PROMPT = R"(Break user task into Android UI execution steps. JSON only:
 {"goal":"...","apps":["..."],"steps":["..."]}
-
-Rules:
-- steps: 2 to 4 short imperative English lines
-- allowed action verbs: click, set_text, scroll, back
-- apps: 0 to 3 likely app names (contacts, phone, settings, youtube, etc.)
-- keep goal concise and concrete
-)";
+- 2-4 imperative steps (verbs: click, set_text, scroll, back)
+- 0-3 app names (contacts, phone, settings, etc.)
+- goal: concise, concrete)";
 
 #if defined(ANDROID)
 constexpr const char * LOG_TAG = "loki_action";
