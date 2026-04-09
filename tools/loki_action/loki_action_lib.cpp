@@ -2782,7 +2782,7 @@ std::optional<loki_action::extracted_steps_plan> run_steps_extractor_global(
     std::string & stage,
     std::string & last_model_response
 ) {
-    if (loki_action::trim_copy(context.task).empty() || context.step_number > 2) {
+    if (loki_action::trim_copy(context.task).empty() || context.step_number > 3) {
         return std::nullopt;
     }
 
