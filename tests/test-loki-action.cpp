@@ -275,5 +275,56 @@ int main() {
     }
     assert_true(did_throw, "malformed json should throw");
 
+    // parse_prompt_context: single action -- counts itself as 1
+    {
+        const auto ctx = loki_action::parse_prompt_context(
+            "Task: find contact\nHistory (old->new): 1. click id=5 label='Contacts' app=contacts"
+        );
+        assert_true(ctx.repeated_tail_same_id == 1, "single action same_id should be 1");
+        assert_true(ctx.repeated_tail_same_signature == 1, "single action same_sig should be 1");
+        assert_true(ctx.repeated_tail_clicks == 1, "single action clicks should be 1");
+        assert_true(ctx.step_number == 2, "single history entry: step_number should be 2");
+        assert_equals("find contact", ctx.task, "task should be extracted");
+    }
+
+    // parse_prompt_context: two identical actions -- indicates stuck (repeated_tail >= 2)
+    {
+        const auto ctx = loki_action::parse_prompt_context(
+            "Task: find contact\nHistory (old->new): "
+            "1. click id=5 label='Contacts' app=contacts "
+            "2. click id=5 label='Contacts' app=contacts"
+        );
+        assert_true(ctx.repeated_tail_same_id == 2, "repeated same_id should be 2");
+        assert_true(ctx.repeated_tail_same_signature == 2, "repeated same_sig should be 2");
+    }
+
+    // parse_prompt_context: three different clicks -- not stuck by id
+    {
+        const auto ctx = loki_action::parse_prompt_context(
+            "Task: navigate\nHistory (old->new): "
+            "1. click id=3 label='A' "
+            "2. click id=5 label='B' "
+            "3. click id=7 label='C'"
+        );
+        assert_true(ctx.repeated_tail_same_id == 1, "different id clicks should not be stuck");
+        assert_true(ctx.repeated_tail_clicks == 3, "three clicks counted correctly");
+    }
+
+    // parse_steps_extractor_content: valid content
+    {
+        const auto plan = loki_action::parse_steps_extractor_content(
+            R"({"goal":"Open contacts and find Mom","apps":["contacts"],"steps":["click Contacts","set_text Mom"]})"
+        );
+        assert_true(plan.has_value(), "valid extractor content should parse");
+        assert_equals("Open contacts and find Mom", plan->goal, "plan goal mismatch");
+        assert_true(plan->apps.size() == 1, "plan should have 1 app");
+        assert_true(plan->steps.size() == 2, "plan should have 2 steps");
+    }
+
+    // parse_steps_extractor_content: invalid/empty content returns nullopt
+    assert_true(!loki_action::parse_steps_extractor_content("").has_value(), "empty returns nullopt");
+    assert_true(!loki_action::parse_steps_extractor_content("{}").has_value(), "empty obj returns nullopt");
+    assert_true(!loki_action::parse_steps_extractor_content("not json").has_value(), "invalid json returns nullopt");
+
     return 0;
 }

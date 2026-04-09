@@ -3079,9 +3079,9 @@ LOKI_ACTION_API loki_action_result_t * loki_action_resolve_path(
             loki_action::prompt_requests_state_change(prompt_context.task) && !state_candidate_ids.empty();
         const bool history_indicates_stuck =
             prompt_context.has_loop_hint ||
-            prompt_context.repeated_tail_same_signature >= 1 ||
-            prompt_context.repeated_tail_same_id >= 1 ||
-            prompt_context.repeated_tail_clicks >= 3;
+            prompt_context.repeated_tail_same_signature >= 2 ||
+            prompt_context.repeated_tail_same_id >= 2 ||
+            prompt_context.repeated_tail_clicks >= 4;
         const bool prefers_editable_input = !editable_candidate_ids.empty() && (
             prefers_text_edit ||
             (has_searchable_editable && prefers_lookup_input) ||
