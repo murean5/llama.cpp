@@ -3122,7 +3122,9 @@ LOKI_ACTION_API loki_action_result_t * loki_action_resolve_path(
                     fallback_ids,
                     fallback_editable_ids,
                     true,
-                    prefers_back_navigation
+                    prefers_back_navigation,
+                    false,
+                    true
                 );
                 if (fallback_response.has_value()) {
                     (void) try_accept_model_response(
