@@ -3125,6 +3125,7 @@ LOKI_ACTION_API loki_action_result_t * loki_action_resolve_path(
                 if (!fallback_to_non_editable) {
                     fallback_editable_ids = editable_candidate_ids;
                 }
+                const bool allow_done_in_fallback = prompt_context.step_number > 1;
                 const auto fallback_response = run_model_pass(
                     fallback_to_non_editable ? "non-editable-fallback" : "default",
                     fallback_to_non_editable ? loki_action::CLICK_FALLBACK_PROMPT : loki_action::SYSTEM_PROMPT,
@@ -3133,7 +3134,7 @@ LOKI_ACTION_API loki_action_result_t * loki_action_resolve_path(
                     true,
                     prefers_back_navigation,
                     false,
-                    true
+                    allow_done_in_fallback
                 );
                 if (fallback_response.has_value()) {
                     (void) try_accept_model_response(
@@ -3144,8 +3145,8 @@ LOKI_ACTION_API loki_action_result_t * loki_action_resolve_path(
             }
 
             // Done-check runs LAST — only after all action passes failed.
-            // Model is asked if goal is already complete given what's on screen.
-            if (!has_action_response) {
+            // Skip on step 1: agent must act first, done not in grammar.
+            if (!has_action_response && prompt_context.step_number > 1) {
                 const auto done_check_response = run_model_pass(
                     "done-check",
                     loki_action::DONE_CHECK_PROMPT,
