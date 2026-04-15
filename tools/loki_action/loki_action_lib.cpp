@@ -3154,6 +3154,15 @@ LOKI_ACTION_API loki_action_result_t * loki_action_resolve_path(
         auto try_accept_model_response = [&](const loki_action::model_action_response & candidate,
                                              const char * pass_name) -> bool {
             if (candidate.done) {
+                // Step 1: agent hasn't acted yet — must try at least one action
+                if (prompt_context.step_number <= 1) {
+                    LOKI_LOGI(
+                        "STEP %d DONE REJECTED: pass=%s reason=first-step-must-act",
+                        prompt_context.step_number,
+                        pass_name
+                    );
+                    return false;
+                }
                 // Only reject done if agent is stuck in a repeat loop.
                 // Otherwise trust model — it sees the screen and the task.
                 const bool repeat_loop =
