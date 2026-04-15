@@ -3234,24 +3234,6 @@ LOKI_ACTION_API loki_action_result_t * loki_action_resolve_path(
         };
 
         try {
-            if (!has_action_response) {
-                const auto done_check_response = run_model_pass(
-                    "done-check",
-                    loki_action::DONE_CHECK_PROMPT,
-                    {},
-                    {},
-                    {},
-                    false,
-                    false,
-                    false,
-                    true,
-                    true
-                );
-                if (done_check_response.has_value() && done_check_response->done) {
-                    (void) try_accept_model_response(*done_check_response, "done-check");
-                }
-            }
-
             if (!has_action_response && prefers_state_action) {
                 const auto & state_ids_for_pass =
                     state_action_candidate_ids.empty() ? state_candidate_ids : state_action_candidate_ids;
@@ -3359,6 +3341,26 @@ LOKI_ACTION_API loki_action_result_t * loki_action_resolve_path(
                         *fallback_response,
                         fallback_to_non_editable ? "non-editable-fallback" : "default"
                     );
+                }
+            }
+
+            // Done-check runs LAST — only after all action passes failed.
+            // Model is asked if goal is already complete given what's on screen.
+            if (!has_action_response) {
+                const auto done_check_response = run_model_pass(
+                    "done-check",
+                    loki_action::DONE_CHECK_PROMPT,
+                    {},
+                    {},
+                    {},
+                    false,
+                    false,
+                    false,
+                    true,
+                    true
+                );
+                if (done_check_response.has_value() && done_check_response->done) {
+                    (void) try_accept_model_response(*done_check_response, "done-check");
                 }
             }
         } catch (const std::bad_cast &) {
