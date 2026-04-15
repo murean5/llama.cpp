@@ -3154,22 +3154,23 @@ LOKI_ACTION_API loki_action_result_t * loki_action_resolve_path(
         auto try_accept_model_response = [&](const loki_action::model_action_response & candidate,
                                              const char * pass_name) -> bool {
             if (candidate.done) {
-                const auto done_check = loki_action::validate_done_response(grouped, prompt_context.task, prompt_context);
-                if (!done_check.accepted) {
+                // Only reject done if agent is stuck in a repeat loop.
+                // Otherwise trust model — it sees the screen and the task.
+                const bool repeat_loop =
+                    prompt_context.repeated_tail_same_id >= 2 ||
+                    prompt_context.repeated_tail_same_signature >= 2;
+                if (repeat_loop) {
                     LOKI_LOGI(
-                        "STEP %d DONE REJECTED: pass=%s reason=%s",
+                        "STEP %d DONE REJECTED: pass=%s reason=repeat-loop",
                         prompt_context.step_number,
-                        pass_name,
-                        done_check.reason.c_str()
+                        pass_name
                     );
                     return false;
                 }
-
                 LOKI_LOGI(
-                    "STEP %d DONE ACCEPTED: pass=%s reason=%s",
+                    "STEP %d DONE ACCEPTED: pass=%s reason=model-decision",
                     prompt_context.step_number,
-                    pass_name,
-                    done_check.reason.c_str()
+                    pass_name
                 );
             }
 
@@ -3224,7 +3225,7 @@ LOKI_ACTION_API loki_action_result_t * loki_action_resolve_path(
         };
 
         try {
-            if (!has_action_response && !prompt_context.history_tokens.empty()) {
+            if (!has_action_response) {
                 const auto done_check_response = run_model_pass(
                     "done-check",
                     loki_action::DONE_CHECK_PROMPT,
