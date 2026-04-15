@@ -35,10 +35,9 @@ namespace {
 constexpr const char* SYSTEM_PROMPT = R"(Android UI agent. Pick one JSON action matching grammar.
 1) If search/find goal and editable field visible, use set_text with search value
 2) Click direct visible target matching goal
-3) scroll if target not visible but app is correct
-4) back only for explicit exit/wrong app
-5) {"done":true} only if goal ALREADY visibly complete on screen
-6) Never repeat last HistSig)";
+3) back only for explicit exit/wrong app
+4) {"done":true} only if goal ALREADY visibly complete on screen
+5) Never repeat last HistSig)";
 
 constexpr const char * EDITABLE_PRIORITY_PROMPT =
     "Editable ids only. "
@@ -49,7 +48,7 @@ constexpr const char * EDITABLE_PRIORITY_PROMPT =
 constexpr const char * CLICK_FALLBACK_PROMPT =
     "No editable fit. "
     "{\"done\":true} if complete. "
-    "Else click, scroll, or back. "
+    "Else click or back. "
     "No signature repeat. "
     "{\"id\":-1} if no fit.";
 
@@ -70,19 +69,9 @@ constexpr const char * STATE_PRIORITY_PROMPT =
     "Else {\"id\":<id>,\"action\":\"click\",\"done\":false}. "
     "{\"id\":-1} if no fit.";
 
-constexpr const char * SCROLL_UP_PRIORITY_PROMPT =
-    "Target not visible. One upward scroll. "
-    "{\"id\":<id>,\"action\":\"scroll_backward\",\"done\":false}. "
-    "{\"id\":-1} if no fit.";
-
-constexpr const char * SCROLL_DOWN_PRIORITY_PROMPT =
-    "Upward scroll insufficient. One downward scroll. "
-    "{\"id\":<id>,\"action\":\"scroll_forward\",\"done\":false}. "
-    "{\"id\":-1} if no fit.";
-
 constexpr const char * STEP_EXTRACTOR_PROMPT = R"(Break user task into Android UI execution steps. JSON only:
 {"goal":"...","apps":["..."],"steps":["..."]}
-- 2-4 imperative steps (verbs: click, set_text, scroll, back)
+- 2-4 imperative steps (verbs: click, set_text, back)
 - 0-3 app names (contacts, phone, settings, etc.)
 - goal: concise, concrete)";
 
@@ -740,12 +729,6 @@ std::string build_history_signature(
 }
 
 char detect_history_action_code(const std::string & action_line) {
-    if (action_line.find("scroll_forward") != std::string::npos) {
-        return 'f';
-    }
-    if (action_line.find("scroll_backward") != std::string::npos) {
-        return 'r';
-    }
     if (action_line.find("set_text") != std::string::npos) {
         return 't';
     }
@@ -1501,12 +1484,8 @@ model_action_response parse_action_response_json(const json & parsed) {
             result.action_type = "click";
             return result;
         }
-        if (lowered_action == "scroll_forward" || lowered_action == "scroll_backward") {
-            result.action_type = lowered_action;
-            return result;
-        }
         if (lowered_action != "set_text") {
-            throw std::runtime_error("model response action must be click, set_text, scroll_forward, scroll_backward, or back");
+            throw std::runtime_error("model response action must be click, set_text, or back");
         }
 
         const auto text_it = parsed.find("text");
@@ -1551,11 +1530,8 @@ model_action_response parse_action_response_json(const json & parsed) {
     if (result.action_type == "click") {
         return result;
     }
-    if (result.action_type == "scroll_forward" || result.action_type == "scroll_backward") {
-        return result;
-    }
     if (result.action_type != "set_text") {
-        throw std::runtime_error("model response action must be click, set_text, scroll_forward, or scroll_backward");
+        throw std::runtime_error("model response action must be click, set_text, or back");
     }
 
     const auto text_it = parsed.find("text");
@@ -1829,52 +1805,6 @@ static bool prompt_requests_state_change(const std::string & user_prompt) {
         contains_any_substring(user_prompt, russian_keywords);
 }
 
-static bool prompt_requests_scroll_intent(const std::string & user_prompt) {
-    const auto lowered_ascii = to_lower_ascii(user_prompt);
-    const std::vector<std::string> english_keywords = {
-        "scroll", "swipe", "more results", "more items", "next items", "show more", "list down", "list up"
-    };
-    const std::vector<std::string> russian_keywords = {
-        u8"скролл", u8"пролист", u8"листай", u8"свайп", u8"покажи еще", u8"ниже", u8"выше"
-    };
-
-    return contains_any_substring(lowered_ascii, english_keywords) ||
-        contains_any_substring(user_prompt, russian_keywords);
-}
-
-static bool prompt_prefers_scroll_down(const std::string & user_prompt) {
-    const auto lowered_ascii = to_lower_ascii(user_prompt);
-    const auto lowered_multilang = to_lower_basic_multilang(user_prompt);
-    const std::vector<std::string> down_en = {
-        "scroll down", "swipe up", "list down", "more results", "more items",
-        "next items", "show more", "down to", "further down"
-    };
-    const std::vector<std::string> down_ru = {
-        u8"вниз", u8"ниже", u8"пролистай вниз", u8"листай вниз",
-        u8"скролл вниз", u8"покажи еще", u8"дальше"
-    };
-    const bool wants_down = contains_any_substring(lowered_ascii, down_en) ||
-        contains_any_substring(lowered_multilang, down_ru);
-
-    const std::vector<std::string> up_en = {
-        "scroll up", "swipe down", "list up", "back up", "up to"
-    };
-    const std::vector<std::string> up_ru = {
-        u8"вверх", u8"выше", u8"пролистай вверх", u8"листай вверх", u8"скролл вверх"
-    };
-    const bool wants_up = contains_any_substring(lowered_ascii, up_en) ||
-        contains_any_substring(lowered_multilang, up_ru);
-
-    if (wants_down && !wants_up) {
-        return true;
-    }
-    // Default: prefer down (forward) — most common scroll direction
-    if (!wants_down && !wants_up) {
-        return true;
-    }
-    return false;
-}
-
 static bool prompt_requests_back_navigation(const std::string & user_prompt) {
     const auto lowered_ascii = to_lower_ascii(user_prompt);
     const auto lowered_multilang = to_lower_basic_multilang(user_prompt);
@@ -2063,10 +1993,6 @@ static std::string build_candidate_signature(
         action_code = 't';
     } else if (response.action_type == "back") {
         action_code = 'b';
-    } else if (response.action_type == "scroll_forward") {
-        action_code = 'f';
-    } else if (response.action_type == "scroll_backward") {
-        action_code = 'r';
     }
 
     std::optional<int32_t> id;
@@ -2083,30 +2009,6 @@ static std::string build_candidate_signature(
         label = "back";
     }
     return build_history_signature(action_code, id, label, shorten_app_name(screen_name));
-}
-
-static bool history_prefers_scroll_backward_first(const prompt_context & context, const std::string & screen_name) {
-    // Task keywords override history — if user says "down"/"вниз", prefer forward scroll
-    if (prompt_prefers_scroll_down(context.task)) {
-        return false;
-    }
-
-    const auto current_app = shorten_app_name(screen_name);
-    for (auto it = context.history_signatures.rbegin(); it != context.history_signatures.rend(); ++it) {
-        const auto & signature = *it;
-        if (!current_app.empty() && signature.find("@" + current_app) == std::string::npos) {
-            continue;
-        }
-        if (!signature.empty() && signature[0] == 'f') {
-            return false;
-        }
-        if (!signature.empty() && signature[0] == 'r') {
-            return false;
-        }
-        break;
-    }
-    // Default: prefer forward (down) — most common direction
-    return false;
 }
 
 static std::vector<int32_t> collect_candidate_ids(const json & grouped) {
@@ -2584,15 +2486,12 @@ static std::string build_id_rule(const std::vector<int32_t> & ids) {
 std::string build_action_response_grammar(
     const std::vector<int32_t> & ids,
     const std::vector<int32_t> & editable_ids,
-    const std::vector<int32_t> & scrollable_ids,
     bool allow_click,
     bool allow_back,
-    bool allow_scroll,
     bool allow_done
 ) {
     const std::string click_id_rule = build_id_rule(ids);
     const std::string editable_id_rule = build_id_rule(editable_ids);
-    const std::string scroll_id_rule = build_id_rule(scrollable_ids);
     std::string grammar;
     grammar += "root ::= ws (";
     if (allow_done) {
@@ -2607,9 +2506,6 @@ std::string build_action_response_grammar(
     }
     if (!editable_ids.empty()) {
         grammar += " | set-text-response";
-    }
-    if (allow_scroll && !scrollable_ids.empty()) {
-        grammar += " | scroll-forward-response | scroll-backward-response";
     }
     grammar += ") ws\n";
     if (allow_done) {
@@ -2629,13 +2525,6 @@ std::string build_action_response_grammar(
         grammar += "set-text-response ::= \"{\" ws \"\\\"id\\\"\" ws \":\" ws set-text-id-value ws \",\" ws \"\\\"action\\\"\" ws \":\" ws \"\\\"set_text\\\"\" ws \",\" ws \"\\\"text\\\"\" ws \":\" ws json-string ws \",\" ws \"\\\"done\\\"\" ws \":\" ws \"false\" ws \"}\"\n";
         grammar += "set-text-id-value ::= ";
         grammar += editable_id_rule;
-        grammar += "\n";
-    }
-    if (allow_scroll && !scrollable_ids.empty()) {
-        grammar += "scroll-forward-response ::= \"{\" ws \"\\\"id\\\"\" ws \":\" ws scroll-id-value ws \",\" ws \"\\\"action\\\"\" ws \":\" ws \"\\\"scroll_forward\\\"\" ws \",\" ws \"\\\"done\\\"\" ws \":\" ws \"false\" ws \"}\"\n";
-        grammar += "scroll-backward-response ::= \"{\" ws \"\\\"id\\\"\" ws \":\" ws scroll-id-value ws \",\" ws \"\\\"action\\\"\" ws \":\" ws \"\\\"scroll_backward\\\"\" ws \",\" ws \"\\\"done\\\"\" ws \":\" ws \"false\" ws \"}\"\n";
-        grammar += "scroll-id-value ::= ";
-        grammar += scroll_id_rule;
         grammar += "\n";
     }
     grammar += "json-string ::= \"\\\"\" json-char* \"\\\"\"\n";
@@ -2673,26 +2562,15 @@ void validate_action_response_for_grouped(const json & grouped, const model_acti
     }
 
     if (response.selected_id < 0) {
-        throw std::runtime_error("model response selected id must be non-negative for click/set_text/scroll");
+        throw std::runtime_error("model response selected id must be non-negative for click/set_text");
     }
 
     if (response.action_type == "click") {
         return;
     }
 
-    if (response.action_type == "scroll_forward" || response.action_type == "scroll_backward") {
-        if (response.text.has_value() && !trim_copy(*response.text).empty()) {
-            throw std::runtime_error("model response scroll action must not include text");
-        }
-        const auto scrollable_ids = collect_candidate_ids_for_attr(grouped, "scrollable");
-        if (std::find(scrollable_ids.begin(), scrollable_ids.end(), response.selected_id) == scrollable_ids.end()) {
-            throw std::runtime_error("model returned scroll action for non-scrollable id");
-        }
-        return;
-    }
-
     if (response.action_type != "set_text") {
-        throw std::runtime_error("model response action must be click, set_text, scroll_forward, scroll_backward, or back");
+        throw std::runtime_error("model response action must be click, set_text, or back");
     }
 
     if (!response.text.has_value() || trim_copy(*response.text).empty()) {
@@ -2935,7 +2813,6 @@ LOKI_ACTION_API loki_action_result_t * loki_action_resolve_path(
         loki_action::log_multiline_toon(full_toon, prompt_context.step_number);
         const auto candidate_ids = loki_action::collect_candidate_ids(grouped);
         const auto editable_candidate_ids = loki_action::collect_candidate_ids_for_attr(grouped, "editable");
-        const auto scrollable_candidate_ids = loki_action::collect_candidate_ids_for_attr(grouped, "scrollable");
         const auto state_candidate_ids = loki_action::collect_state_candidate_ids(grouped);
         const auto desired_state = loki_action::detect_desired_state(prompt_context.task);
         const auto task_match_terms = loki_action::extract_task_match_terms(prompt_context.task);
@@ -2979,10 +2856,8 @@ LOKI_ACTION_API loki_action_result_t * loki_action_resolve_path(
                                   const char * system_prompt,
                                   const std::vector<int32_t> & pass_ids,
                                   const std::vector<int32_t> & pass_editable_ids,
-                                  const std::vector<int32_t> & pass_scrollable_ids,
                                   bool allow_click,
                                   bool allow_back = false,
-                                  bool allow_scroll = false,
                                   bool allow_empty_candidates = false,
                                   bool allow_done = false) -> std::optional<loki_action::model_action_response> {
             if (pass_ids.empty() && !allow_empty_candidates) {
@@ -2993,23 +2868,19 @@ LOKI_ACTION_API loki_action_result_t * loki_action_resolve_path(
             const std::string grammar = loki_action::build_action_response_grammar(
                 pass_ids,
                 pass_editable_ids,
-                pass_scrollable_ids,
                 allow_click,
                 allow_back,
-                allow_scroll,
                 allow_done
             );
 
             LOKI_LOGI(
-                "STEP %d MODEL PASS: %s ids=%zu editable_ids=%zu scrollable_ids=%zu allow_click=%s allow_back=%s allow_scroll=%s allow_done=%s",
+                "STEP %d MODEL PASS: %s ids=%zu editable_ids=%zu allow_click=%s allow_back=%s allow_done=%s",
                 prompt_context.step_number,
                 pass_name,
                 pass_ids.size(),
                 pass_editable_ids.size(),
-                pass_scrollable_ids.size(),
                 allow_click ? "true" : "false",
                 allow_back ? "true" : "false",
-                allow_scroll ? "true" : "false",
                 allow_done ? "true" : "false"
             );
             LOKI_LOGI(
@@ -3106,41 +2977,24 @@ LOKI_ACTION_API loki_action_result_t * loki_action_resolve_path(
         const bool prefers_text_edit = loki_action::prompt_requests_text_edit(prompt_context.task);
         const bool prefers_lookup_input = loki_action::prompt_requests_lookup_input(prompt_context.task);
         const bool prefers_back_navigation = loki_action::prompt_requests_back_navigation(prompt_context.task);
-        const bool prefers_scroll_intent = loki_action::prompt_requests_scroll_intent(prompt_context.task);
         const bool prefers_state_action =
             loki_action::prompt_requests_state_change(prompt_context.task) && !state_candidate_ids.empty();
-        const bool history_indicates_stuck =
-            prompt_context.has_loop_hint ||
-            prompt_context.repeated_tail_same_signature >= 2 ||
-            prompt_context.repeated_tail_same_id >= 2 ||
-            prompt_context.repeated_tail_clicks >= 4;
         const bool prefers_editable_input = !editable_candidate_ids.empty() && (
             prefers_text_edit ||
             (has_searchable_editable && prefers_lookup_input) ||
             (has_searchable_editable && prompt_context.repeated_tail_clicks >= 2)
         ) && !has_direct_click_match && !prefers_state_action;
-        const bool should_consider_scroll = !scrollable_candidate_ids.empty();
-        (void) prefers_scroll_intent;     // used in LOKI_LOGI (no-op on non-Android)
-        (void) history_indicates_stuck;   // used in LOKI_LOGI (no-op on non-Android)
-        const bool prefer_scroll_backward_first =
-            should_consider_scroll &&
-            loki_action::history_prefers_scroll_backward_first(prompt_context, screen_name);
         LOKI_LOGI(
-            "STEP %d PROMPT MODE: prefers_text_edit=%s prefers_lookup_input=%s prefers_back_navigation=%s prefers_scroll_intent=%s prefers_state_action=%s desired_state=%d prefers_editable_input=%s direct_click_match=%s direct_click_ids=%zu should_consider_scroll=%s prefer_scroll_backward_first=%s history_stuck=%s scrollable_candidates=%zu state_candidates=%zu state_action_candidates=%zu searchable_editable=%s editable_candidates=%zu total_candidates=%zu history=%zu repeat_same_id=%d repeat_same_sig=%d",
+            "STEP %d PROMPT MODE: prefers_text_edit=%s prefers_lookup_input=%s prefers_back_navigation=%s prefers_state_action=%s desired_state=%d prefers_editable_input=%s direct_click_match=%s direct_click_ids=%zu state_candidates=%zu state_action_candidates=%zu searchable_editable=%s editable_candidates=%zu total_candidates=%zu history=%zu repeat_same_id=%d repeat_same_sig=%d",
             prompt_context.step_number,
             prefers_text_edit ? "true" : "false",
             prefers_lookup_input ? "true" : "false",
             prefers_back_navigation ? "true" : "false",
-            prefers_scroll_intent ? "true" : "false",
             prefers_state_action ? "true" : "false",
             static_cast<int>(desired_state),
             prefers_editable_input ? "true" : "false",
             has_direct_click_match ? "true" : "false",
             direct_click_candidate_ids.size(),
-            should_consider_scroll ? "true" : "false",
-            prefer_scroll_backward_first ? "true" : "false",
-            history_indicates_stuck ? "true" : "false",
-            scrollable_candidate_ids.size(),
             state_candidate_ids.size(),
             state_action_candidate_ids.size(),
             has_searchable_editable ? "true" : "false",
@@ -3183,31 +3037,6 @@ LOKI_ACTION_API loki_action_result_t * loki_action_resolve_path(
                 );
             }
 
-            if (!candidate.done &&
-                std::strcmp(pass_name, "scroll-up-priority") == 0 &&
-                candidate.action_type != "scroll_backward" &&
-                candidate.selected_id >= 0) {
-                LOKI_LOGI(
-                    "STEP %d ACTION REJECTED: pass=%s reason=expected-scroll-backward got=%s",
-                    prompt_context.step_number,
-                    pass_name,
-                    candidate.action_type.c_str()
-                );
-                return false;
-            }
-            if (!candidate.done &&
-                std::strcmp(pass_name, "scroll-down-priority") == 0 &&
-                candidate.action_type != "scroll_forward" &&
-                candidate.selected_id >= 0) {
-                LOKI_LOGI(
-                    "STEP %d ACTION REJECTED: pass=%s reason=expected-scroll-forward got=%s",
-                    prompt_context.step_number,
-                    pass_name,
-                    candidate.action_type.c_str()
-                );
-                return false;
-            }
-
             if (!candidate.done && !prompt_context.history_signatures.empty()) {
                 const auto candidate_signature = loki_action::build_candidate_signature(candidate, grouped, screen_name);
                 const size_t check_depth = std::min<size_t>(3, prompt_context.history_signatures.size());
@@ -3242,10 +3071,8 @@ LOKI_ACTION_API loki_action_result_t * loki_action_resolve_path(
                     loki_action::STATE_PRIORITY_PROMPT,
                     state_ids_for_pass,
                     {},
-                    {},
                     true,
-                    prefers_back_navigation,
-                    false
+                    prefers_back_navigation
                 );
                 if (state_response.has_value() &&
                     (state_response->done || state_response->selected_id >= 0)) {
@@ -3259,10 +3086,8 @@ LOKI_ACTION_API loki_action_result_t * loki_action_resolve_path(
                     loki_action::DIRECT_CLICK_PRIORITY_PROMPT,
                     direct_click_candidate_ids,
                     {},
-                    {},
                     true,
-                    prefers_back_navigation,
-                    false
+                    prefers_back_navigation
                 );
                 if (direct_click_response.has_value() &&
                     (direct_click_response->done || direct_click_response->selected_id >= 0)) {
@@ -3276,45 +3101,10 @@ LOKI_ACTION_API loki_action_result_t * loki_action_resolve_path(
                     loki_action::EDITABLE_PRIORITY_PROMPT,
                     editable_candidate_ids,
                     editable_candidate_ids,
-                    {},
                     false
                 );
                 if (editable_response.has_value() && editable_response->selected_id >= 0) {
                     (void) try_accept_model_response(*editable_response, "editable-priority");
-                }
-            }
-
-            if (!has_action_response && should_consider_scroll && prefer_scroll_backward_first) {
-                const auto scroll_up_response = run_model_pass(
-                    "scroll-up-priority",
-                    loki_action::SCROLL_UP_PRIORITY_PROMPT,
-                    scrollable_candidate_ids,
-                    {},
-                    scrollable_candidate_ids,
-                    false,
-                    false,
-                    true
-                );
-                if (scroll_up_response.has_value() &&
-                    (scroll_up_response->done || scroll_up_response->selected_id >= 0)) {
-                    (void) try_accept_model_response(*scroll_up_response, "scroll-up-priority");
-                }
-            }
-
-            if (!has_action_response && should_consider_scroll && !prefer_scroll_backward_first) {
-                const auto scroll_down_response = run_model_pass(
-                    "scroll-down-priority",
-                    loki_action::SCROLL_DOWN_PRIORITY_PROMPT,
-                    scrollable_candidate_ids,
-                    {},
-                    scrollable_candidate_ids,
-                    false,
-                    false,
-                    true
-                );
-                if (scroll_down_response.has_value() &&
-                    (scroll_down_response->done || scroll_down_response->selected_id >= 0)) {
-                    (void) try_accept_model_response(*scroll_down_response, "scroll-down-priority");
                 }
             }
 
@@ -3331,10 +3121,8 @@ LOKI_ACTION_API loki_action_result_t * loki_action_resolve_path(
                     fallback_to_non_editable ? loki_action::CLICK_FALLBACK_PROMPT : loki_action::SYSTEM_PROMPT,
                     fallback_ids,
                     fallback_editable_ids,
-                    scrollable_candidate_ids,
                     true,
-                    prefers_back_navigation,
-                    should_consider_scroll
+                    prefers_back_navigation
                 );
                 if (fallback_response.has_value()) {
                     (void) try_accept_model_response(
@@ -3352,8 +3140,6 @@ LOKI_ACTION_API loki_action_result_t * loki_action_resolve_path(
                     loki_action::DONE_CHECK_PROMPT,
                     {},
                     {},
-                    {},
-                    false,
                     false,
                     false,
                     true,

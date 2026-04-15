@@ -69,19 +69,16 @@ int main() {
         "plain navigation request should not be treated as text-edit intent"
     );
 
-    const auto grammar = loki_action::build_action_response_grammar({7, 12, 23}, {12}, {23}, true, false, true);
+    const auto grammar = loki_action::build_action_response_grammar({7, 12, 23}, {12}, true, false, true);
     assert_true(grammar.find("done-response") != std::string::npos, "grammar should include done branch");
     assert_true(grammar.find("click-response") != std::string::npos, "grammar should include click branch");
     assert_true(grammar.find("set-text-response") != std::string::npos, "grammar should include set_text branch");
-    assert_true(grammar.find("scroll-forward-response") != std::string::npos, "grammar should include scroll_forward branch");
-    assert_true(grammar.find("scroll-backward-response") != std::string::npos, "grammar should include scroll_backward branch");
     assert_true(grammar.find("back-response") == std::string::npos, "grammar should not include back by default");
     assert_true(grammar.find(R"("7")") != std::string::npos, "grammar should include allowed ids");
     assert_true(grammar.find("set-text-id-value ::= \"12\"") != std::string::npos, "set_text ids should be limited to editable ids");
-    assert_true(grammar.find("scroll-id-value ::= \"23\"") != std::string::npos, "scroll ids should be limited to scrollable ids");
     assert_true(grammar.find(R"("\"done\"")") != std::string::npos, "grammar should mention done");
 
-    const auto editable_grammar = loki_action::build_action_response_grammar({7, 12, 23}, {12}, {}, false, false, false);
+    const auto editable_grammar = loki_action::build_action_response_grammar({7, 12, 23}, {12}, false, false, false);
     assert_true(
         editable_grammar.find("click-response") == std::string::npos,
         "editable grammar should not include click branch"
@@ -90,18 +87,14 @@ int main() {
         editable_grammar.find("set-text-response") != std::string::npos,
         "editable grammar should still include set_text branch"
     );
-    assert_true(
-        editable_grammar.find("scroll-forward-response") == std::string::npos,
-        "editable grammar should not include scroll branch"
-    );
 
-    const auto click_only_grammar = loki_action::build_action_response_grammar({7, 12, 23}, {}, {}, true, false, false);
+    const auto click_only_grammar = loki_action::build_action_response_grammar({7, 12, 23}, {}, true, false, false);
     assert_true(
         click_only_grammar.find("set-text-response") == std::string::npos,
         "grammar without editable ids should not include set_text branch"
     );
 
-    const auto back_enabled_grammar = loki_action::build_action_response_grammar({7, 12, 23}, {12}, {23}, true, true, true);
+    const auto back_enabled_grammar = loki_action::build_action_response_grammar({7, 12, 23}, {12}, true, true, true);
     assert_true(
         back_enabled_grammar.find("back-response") != std::string::npos,
         "grammar with allow_back should include back branch"
@@ -137,22 +130,6 @@ int main() {
     assert_true(set_text_phrase_action.text.has_value(), "phrase set_text should have text");
     assert_equals("привет, как дела?", *set_text_phrase_action.text, "phrase set_text payload mismatch");
     assert_true(!set_text_phrase_action.done, "phrase set_text should not be done");
-
-    const auto scroll_forward_response = std::string(
-        R"({"choices":[{"message":{"content":"{\"id\":23,\"action\":\"scroll_forward\",\"done\":false}"}}]})"
-    );
-    const auto scroll_forward_action = loki_action::extract_action_response_from_chat_response(scroll_forward_response);
-    assert_true(scroll_forward_action.selected_id == 23, "scroll_forward selected id mismatch");
-    assert_equals("scroll_forward", scroll_forward_action.action_type, "scroll_forward action mismatch");
-    assert_true(!scroll_forward_action.text.has_value(), "scroll_forward action should not have text");
-
-    const auto scroll_backward_response = std::string(
-        R"({"choices":[{"message":{"content":"{\"id\":23,\"action\":\"scroll_backward\",\"done\":false}"}}]})"
-    );
-    const auto scroll_backward_action = loki_action::extract_action_response_from_chat_response(scroll_backward_response);
-    assert_true(scroll_backward_action.selected_id == 23, "scroll_backward selected id mismatch");
-    assert_equals("scroll_backward", scroll_backward_action.action_type, "scroll_backward action mismatch");
-    assert_true(!scroll_backward_action.text.has_value(), "scroll_backward action should not have text");
 
     const auto click_done_false_response = std::string(
         R"({"choices":[{"message":{"content":"{\"id\":7,\"action\":\"click\",\"done\":false}"}}]})"
@@ -190,11 +167,6 @@ int main() {
     loki_action::validate_action_response_for_grouped(grouped, set_text_action);
     loki_action::validate_action_response_for_grouped(grouped, back_action);
     loki_action::validate_action_response_for_grouped(grouped, done_action);
-    const auto grouped_with_scrollable = json::parse(
-        R"({"scrollable":[{"id":23,"path":[0],"class":"android.widget.ScrollView","text":"Results"}]})"
-    );
-    loki_action::validate_action_response_for_grouped(grouped_with_scrollable, scroll_forward_action);
-    loki_action::validate_action_response_for_grouped(grouped_with_scrollable, scroll_backward_action);
 
     const auto no_match_response = std::string(R"({"choices":[{"message":{"content":"{\"id\":-1}"}}]})");
     const auto no_match_action = loki_action::extract_action_response_from_chat_response(no_match_response);
@@ -212,16 +184,6 @@ int main() {
         did_throw = true;
     }
     assert_true(did_throw, "set_text without text should throw");
-
-    did_throw = false;
-    try {
-        (void) loki_action::extract_action_response_from_chat_response(
-            R"({"choices":[{"message":{"content":"{\"id\":7,\"action\":\"scroll\"}"}}]})"
-        );
-    } catch (const std::exception &) {
-        did_throw = true;
-    }
-    assert_true(did_throw, "unknown action should throw");
 
     did_throw = false;
     try {

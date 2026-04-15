@@ -53,10 +53,8 @@ bool prompt_requests_text_edit(const std::string & user_prompt);
 std::string build_action_response_grammar(
     const std::vector<int32_t> & ids,
     const std::vector<int32_t> & editable_ids,
-    const std::vector<int32_t> & scrollable_ids,
     bool allow_click = true,
     bool allow_back = false,
-    bool allow_scroll = false,
     bool allow_done = true
 );
 model_action_response extract_action_response_from_chat_response(const std::string & response_body);
