@@ -3119,14 +3119,9 @@ LOKI_ACTION_API loki_action_result_t * loki_action_resolve_path(
             (has_searchable_editable && prefers_lookup_input) ||
             (has_searchable_editable && prompt_context.repeated_tail_clicks >= 2)
         ) && !has_direct_click_match && !prefers_state_action;
-        const bool should_consider_scroll =
-            !scrollable_candidate_ids.empty() &&
-            !prefers_back_navigation &&
-            !prefers_state_action &&
-            !has_direct_click_match &&
-            !prefers_text_edit &&
-            !prefers_editable_input &&
-            (prefers_scroll_intent || history_indicates_stuck);
+        const bool should_consider_scroll = !scrollable_candidate_ids.empty();
+        (void) prefers_scroll_intent;     // used in LOKI_LOGI (no-op on non-Android)
+        (void) history_indicates_stuck;   // used in LOKI_LOGI (no-op on non-Android)
         const bool prefer_scroll_backward_first =
             should_consider_scroll &&
             loki_action::history_prefers_scroll_backward_first(prompt_context, screen_name);
