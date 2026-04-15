@@ -33,11 +33,11 @@ namespace loki_action {
 namespace {
 
 constexpr const char* SYSTEM_PROMPT = R"(Android UI agent. Pick one JSON action matching grammar.
-1) {"done":true} if goal visibly complete
-2) Click direct visible target
-3) set_text on editable for input goals (value only)
-4) scroll only if target not visible but reachable
-5) back only for explicit exit/back intent
+1) If search/find goal and editable field visible, use set_text with search value
+2) Click direct visible target matching goal
+3) scroll if target not visible but app is correct
+4) back only for explicit exit/wrong app
+5) {"done":true} only if goal ALREADY visibly complete on screen
 6) Never repeat last HistSig)";
 
 constexpr const char * EDITABLE_PRIORITY_PROMPT =
@@ -60,8 +60,8 @@ constexpr const char * DIRECT_CLICK_PRIORITY_PROMPT =
     "{\"id\":-1} if no fit.";
 
 constexpr const char * DONE_CHECK_PROMPT =
-    "Completion check. "
-    "{\"done\":true} if goal visibly satisfied. "
+    "Goal ALREADY complete on current screen? "
+    "{\"done\":true} only if target element/screen/state visibly matches goal. "
     "Else {\"id\":-1}.";
 
 constexpr const char * STATE_PRIORITY_PROMPT =
