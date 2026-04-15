@@ -11,7 +11,7 @@ and performs the full pipeline:
 2. group interactive candidates with stable numeric `id`
 3. build the TOON payload
 4. call local `llama.cpp` server at `POST /v1/chat/completions`
-5. parse action response like `{"id":7,"action":"click"}`
+5. parse action response like `{"id":7,"action":"click","done":false}`, `{"action_type":"back","done":false}`, or `{"done":true}`
 6. resolve that `id` back to the original UI `path`
 
 ## Files
@@ -39,6 +39,7 @@ typedef struct {
     const char * error_message;
     const char * action_type;
     const char * text;
+    bool done;
 } loki_action_result_t;
 
 loki_action_result_t * loki_action_resolve_path(
@@ -58,17 +59,34 @@ Successful results:
   - `path_json = "[0,1,3]"`
   - `action_type = "click"`
   - `text = NULL`
+  - `done = false`
 - Set text:
   - `selected_id = 12`
   - `path_json = "[0,4,0]"`
   - `action_type = "set_text"`
   - `text = "котики"`
+  - `done = false`
+- Back:
+  - `selected_id = -1`
+  - `path_json = NULL`
+  - `action_type = "back"`
+  - `text = NULL`
+  - `done = false`
+- Task complete:
+  - `selected_id = -1`
+  - `path_json = "[]"`
+  - `action_type = NULL`
+  - `text = NULL`
+  - `done = true`
 
 Semantics:
 
 - `click` means Loki should execute exactly one click on the resolved node.
 - `set_text` means Loki should execute exactly one text insertion on the resolved node.
+- `back` means Loki should execute one global Back action. It is a global action and does not use `path_json`.
+- `done = true` means the current task is already complete on the visible screen, so Loki should stop and perform no action.
 - `set_text` is valid only for nodes that are already present in the `editable` TOON group.
+- `back` is allowed only for explicit back/exit/mismatch intents from the user request.
 - For prompts that look like text entry or text editing, the library first prioritizes `editable` candidates and asks the model to pick a `set_text` target there.
 - If that editable-priority pass returns no match, the library falls back to the remaining non-editable candidates and asks for a `click` target.
 - Loki must not search for editable nodes on its own and must not do a preliminary click before `set_text`.
@@ -82,9 +100,13 @@ Semantics:
   - `temperature = 0.0`
   - `max_tokens = 96`
 - Built-in system prompt asks the model to use the user request plus the visible screen and reply only as JSON:
-  - `{"id":7,"action":"click"}`
-  - `{"id":12,"action":"set_text","text":"котики"}`
+  - `{"id":7,"action":"click","done":false}`
+  - `{"id":12,"action":"set_text","text":"котики","done":false}`
+  - `{"action_type":"back","done":false}`
+  - `{"done":true}`
   - `{"id":-1}`
+- For backward compatibility, if the model omits `done` on an action response, the library treats it as `false`.
+- Parser is tolerant to legacy back format `{"action":"back","done":false}` and normalizes it internally.
 - The native library validates that `set_text` can target only ids that belong to the `editable` group. If the model returns `set_text` for a non-editable id, the result is `LOKI_ACTION_STATUS_INVALID_RESPONSE`.
 - On failure, the library returns `path_json = "[]"` and an error status/message.
 - On Android, the generated TOON payload is written to `adb logcat` with tag `loki_action`.
@@ -131,14 +153,17 @@ Output:
    - `result->selected_id`
    - `result->action_type`
    - `result->text`
-6. If `result->action_type == "click"`, perform exactly one click on the returned path.
-7. If `result->action_type == "set_text"`, perform exactly one text insertion with `result->text` on the returned path.
-8. Always call `loki_action_result_destroy(result)` after reading the fields.
+   - `result->done`
+6. If `result->done == true`, stop the multi-step flow and do not perform any UI action.
+7. If `result->action_type == "click"`, perform exactly one click on the returned path.
+8. If `result->action_type == "set_text"`, perform exactly one text insertion with `result->text` on the returned path.
+9. Always call `loki_action_result_destroy(result)` after reading the fields.
 
 Debug interpretation:
 
 - If there is no editable node on the current screen, a request like `напиши в поиске котики` should normally return `click` for the search bar container.
 - After that click changes the screen and an editable field becomes visible, the next independent call should return `set_text` for that `EditText`.
+- If a later screen already satisfies the goal, the next independent call may return `done = true`.
 
 ## Dynamic dependencies of the built ARM64 `.so`
 
