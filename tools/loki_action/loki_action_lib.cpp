@@ -3017,32 +3017,23 @@ LOKI_ACTION_API loki_action_result_t * loki_action_resolve_path(
         auto try_accept_model_response = [&](const loki_action::model_action_response & candidate,
                                              const char * pass_name) -> bool {
             if (candidate.done) {
-                // Step 1: agent hasn't acted yet — must try at least one action
-                if (prompt_context.step_number <= 1) {
+                const auto done_check = loki_action::validate_done_response(
+                    grouped, prompt_context.task, prompt_context
+                );
+                if (!done_check.accepted) {
                     LOKI_LOGI(
-                        "STEP %d DONE REJECTED: pass=%s reason=first-step-must-act",
+                        "STEP %d DONE REJECTED: pass=%s reason=%s",
                         prompt_context.step_number,
-                        pass_name
-                    );
-                    return false;
-                }
-                // Only reject done if agent is stuck in a repeat loop.
-                // Otherwise trust model — it sees the screen and the task.
-                const bool repeat_loop =
-                    prompt_context.repeated_tail_same_id >= 2 ||
-                    prompt_context.repeated_tail_same_signature >= 2;
-                if (repeat_loop) {
-                    LOKI_LOGI(
-                        "STEP %d DONE REJECTED: pass=%s reason=repeat-loop",
-                        prompt_context.step_number,
-                        pass_name
+                        pass_name,
+                        done_check.reason.c_str()
                     );
                     return false;
                 }
                 LOKI_LOGI(
-                    "STEP %d DONE ACCEPTED: pass=%s reason=model-decision",
+                    "STEP %d DONE ACCEPTED: pass=%s reason=%s",
                     prompt_context.step_number,
-                    pass_name
+                    pass_name,
+                    done_check.reason.c_str()
                 );
             }
 
@@ -3072,6 +3063,22 @@ LOKI_ACTION_API loki_action_result_t * loki_action_resolve_path(
         };
 
         try {
+            if (!has_action_response && !prompt_context.history_tokens.empty()) {
+                const auto done_check_response = run_model_pass(
+                    "done-check",
+                    loki_action::DONE_CHECK_PROMPT,
+                    {},
+                    {},
+                    false,
+                    false,
+                    true,
+                    true
+                );
+                if (done_check_response.has_value() && done_check_response->done) {
+                    (void) try_accept_model_response(*done_check_response, "done-check");
+                }
+            }
+
             if (!has_action_response && prefers_state_action) {
                 const auto & state_ids_for_pass =
                     state_action_candidate_ids.empty() ? state_candidate_ids : state_action_candidate_ids;
@@ -3125,16 +3132,13 @@ LOKI_ACTION_API loki_action_result_t * loki_action_resolve_path(
                 if (!fallback_to_non_editable) {
                     fallback_editable_ids = editable_candidate_ids;
                 }
-                const bool allow_done_in_fallback = prompt_context.step_number > 1;
                 const auto fallback_response = run_model_pass(
                     fallback_to_non_editable ? "non-editable-fallback" : "default",
                     fallback_to_non_editable ? loki_action::CLICK_FALLBACK_PROMPT : loki_action::SYSTEM_PROMPT,
                     fallback_ids,
                     fallback_editable_ids,
                     true,
-                    prefers_back_navigation,
-                    false,
-                    allow_done_in_fallback
+                    prefers_back_navigation
                 );
                 if (fallback_response.has_value()) {
                     (void) try_accept_model_response(
@@ -3144,23 +3148,6 @@ LOKI_ACTION_API loki_action_result_t * loki_action_resolve_path(
                 }
             }
 
-            // Done-check runs LAST — only after all action passes failed.
-            // Skip on step 1: agent must act first, done not in grammar.
-            if (!has_action_response && prompt_context.step_number > 1) {
-                const auto done_check_response = run_model_pass(
-                    "done-check",
-                    loki_action::DONE_CHECK_PROMPT,
-                    {},
-                    {},
-                    false,
-                    false,
-                    true,
-                    true
-                );
-                if (done_check_response.has_value() && done_check_response->done) {
-                    (void) try_accept_model_response(*done_check_response, "done-check");
-                }
-            }
         } catch (const std::bad_cast &) {
             const std::string detailed_error =
                 std::string("bad_cast while parsing model response; raw=\"") +
