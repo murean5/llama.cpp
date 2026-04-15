@@ -1842,6 +1842,39 @@ static bool prompt_requests_scroll_intent(const std::string & user_prompt) {
         contains_any_substring(user_prompt, russian_keywords);
 }
 
+static bool prompt_prefers_scroll_down(const std::string & user_prompt) {
+    const auto lowered_ascii = to_lower_ascii(user_prompt);
+    const auto lowered_multilang = to_lower_basic_multilang(user_prompt);
+    const std::vector<std::string> down_en = {
+        "scroll down", "swipe up", "list down", "more results", "more items",
+        "next items", "show more", "down to", "further down"
+    };
+    const std::vector<std::string> down_ru = {
+        u8"вниз", u8"ниже", u8"пролистай вниз", u8"листай вниз",
+        u8"скролл вниз", u8"покажи еще", u8"дальше"
+    };
+    const bool wants_down = contains_any_substring(lowered_ascii, down_en) ||
+        contains_any_substring(lowered_multilang, down_ru);
+
+    const std::vector<std::string> up_en = {
+        "scroll up", "swipe down", "list up", "back up", "up to"
+    };
+    const std::vector<std::string> up_ru = {
+        u8"вверх", u8"выше", u8"пролистай вверх", u8"листай вверх", u8"скролл вверх"
+    };
+    const bool wants_up = contains_any_substring(lowered_ascii, up_en) ||
+        contains_any_substring(lowered_multilang, up_ru);
+
+    if (wants_down && !wants_up) {
+        return true;
+    }
+    // Default: prefer down (forward) — most common scroll direction
+    if (!wants_down && !wants_up) {
+        return true;
+    }
+    return false;
+}
+
 static bool prompt_requests_back_navigation(const std::string & user_prompt) {
     const auto lowered_ascii = to_lower_ascii(user_prompt);
     const auto lowered_multilang = to_lower_basic_multilang(user_prompt);
@@ -2053,6 +2086,11 @@ static std::string build_candidate_signature(
 }
 
 static bool history_prefers_scroll_backward_first(const prompt_context & context, const std::string & screen_name) {
+    // Task keywords override history — if user says "down"/"вниз", prefer forward scroll
+    if (prompt_prefers_scroll_down(context.task)) {
+        return false;
+    }
+
     const auto current_app = shorten_app_name(screen_name);
     for (auto it = context.history_signatures.rbegin(); it != context.history_signatures.rend(); ++it) {
         const auto & signature = *it;
@@ -2067,7 +2105,8 @@ static bool history_prefers_scroll_backward_first(const prompt_context & context
         }
         break;
     }
-    return true;
+    // Default: prefer forward (down) — most common direction
+    return false;
 }
 
 static std::vector<int32_t> collect_candidate_ids(const json & grouped) {
