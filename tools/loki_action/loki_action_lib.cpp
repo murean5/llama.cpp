@@ -70,10 +70,11 @@ constexpr const char * STATE_PRIORITY_PROMPT =
     "{\"id\":-1} if no fit.";
 
 constexpr const char * STEP_EXTRACTOR_PROMPT = R"(Break user task into Android UI execution steps. JSON only:
-{"goal":"...","apps":["..."],"steps":["..."]}
+{"goal":"...","apps":["..."],"steps":["..."],"done_when":"..."}
 - 2-4 imperative steps (verbs: click, set_text, back)
 - 0-3 app names (contacts, phone, settings, etc.)
-- goal: concise, concrete)";
+- goal: concise, concrete
+- done_when: screen state that means task is complete)";
 
 #if defined(ANDROID)
 constexpr const char * LOG_TAG = "loki_action";
@@ -900,6 +901,10 @@ std::string build_user_content_from_context(
                 user_content += compact_single_line(extracted_plan->steps[i], 96);
             }
         }
+        if (!extracted_plan->done_when.empty()) {
+            user_content += "\nDoneWhen: ";
+            user_content += compact_single_line(extracted_plan->done_when, 96);
+        }
     }
     if (!context.history_entries.empty()) {
         user_content += "\nHistoryFull:";
@@ -1175,7 +1180,7 @@ void log_multiline_toon(const std::string & toon, int step_number) {
 
 std::string build_steps_extractor_grammar() {
     std::string grammar;
-    grammar += "root ::= ws \"{\" ws \"\\\"goal\\\"\" ws \":\" ws json-string ws \",\" ws \"\\\"apps\\\"\" ws \":\" ws apps-array ws \",\" ws \"\\\"steps\\\"\" ws \":\" ws steps-array ws \"}\" ws\n";
+    grammar += "root ::= ws \"{\" ws \"\\\"goal\\\"\" ws \":\" ws json-string ws \",\" ws \"\\\"apps\\\"\" ws \":\" ws apps-array ws \",\" ws \"\\\"steps\\\"\" ws \":\" ws steps-array ws \",\" ws \"\\\"done_when\\\"\" ws \":\" ws json-string ws \"}\" ws\n";
     grammar += "apps-array ::= \"[\" ws \"]\" | \"[\" ws json-string ws \"]\" | \"[\" ws json-string ws \",\" ws json-string ws \"]\" | \"[\" ws json-string ws \",\" ws json-string ws \",\" ws json-string ws \"]\"\n";
     grammar += "steps-array ::= \"[\" ws json-string ws \"]\" | \"[\" ws json-string ws \",\" ws json-string ws \"]\" | \"[\" ws json-string ws \",\" ws json-string ws \",\" ws json-string ws \"]\" | \"[\" ws json-string ws \",\" ws json-string ws \",\" ws json-string ws \",\" ws json-string ws \"]\"\n";
     grammar += "json-string ::= \"\\\"\" json-char* \"\\\"\"\n";
@@ -1712,6 +1717,10 @@ std::optional<extracted_steps_plan> parse_steps_extractor_content(const std::str
         const auto apps_it = parsed.find("apps");
         if (apps_it != parsed.end()) {
             plan.apps = parse_compact_string_array(*apps_it, 3, 32);
+        }
+        const auto done_when_it = parsed.find("done_when");
+        if (done_when_it != parsed.end() && done_when_it->is_string()) {
+            plan.done_when = compact_single_line(done_when_it->get<std::string>(), 96);
         }
         return plan;
     } catch (const json::exception &) {

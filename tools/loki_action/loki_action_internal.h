@@ -39,6 +39,7 @@ struct extracted_steps_plan {
     std::string goal;
     std::vector<std::string> apps;
     std::vector<std::string> steps;
+    std::string done_when;
 };
 
 prompt_context parse_prompt_context(const std::string & raw_prompt);
