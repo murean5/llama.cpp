@@ -11,7 +11,7 @@ and performs the full pipeline:
 2. group interactive candidates with stable numeric `id`
 3. build the TOON payload
 4. call local `llama.cpp` server at `POST /v1/chat/completions`
-5. parse action response like `{"id":7,"action":"click","done":false}`, `{"action_type":"back","done":false}`, or `{"done":true}`
+5. parse compact model response like `1:7`, `2:12:0`, `5`, `6`, or `0`
 6. resolve that `id` back to the original UI `path`
 
 ## Files
@@ -98,18 +98,40 @@ Semantics:
 - Request settings:
   - `stream = false`
   - `temperature = 0.0`
-  - `max_tokens = 96`
-- Built-in system prompt asks the model to use the user request plus the visible screen and reply only as JSON:
-  - `{"id":7,"action":"click","done":false}`
-  - `{"id":12,"action":"set_text","text":"котики","done":false}`
-  - `{"action_type":"back","done":false}`
-  - `{"done":true}`
-  - `{"id":-1}`
-- For backward compatibility, if the model omits `done` on an action response, the library treats it as `false`.
-- Parser is tolerant to legacy back format `{"action":"back","done":false}` and normalizes it internally.
-- The native library validates that `set_text` can target only ids that belong to the `editable` group. If the model returns `set_text` for a non-editable id, the result is `LOKI_ACTION_STATUS_INVALID_RESPONSE`.
+  - `max_tokens = 24`
+- Built-in action protocol is compact and numeric:
+  - `1:<id>` = click
+  - `2:<id>:<text_index>` = set_text
+  - `5` = back
+  - `6` = done
+  - `0` = no match
+- The model never returns raw `set_text` payload in the compact protocol. Native code maps `text_index` to one of `TextChoices` prepared from the user request and extracted plan.
+- `done` is gated:
+  - current app must match one of the expected app aliases
+  - a separate `done-check` micro-pass must return `1`
+  - post-validation still rejects weak/looped completion
+- Step extraction is screen-aware and receives:
+  - `CurrentApp`
+  - `CurrentAppShort`
+  - `ScreenMode`
+  - `VisibleStatic`
+  - `TopInteractive`
+- The runtime screen context is split into:
+  - `visible_static`
+  - `interactive`
+- Interactive TOON rows now also expose accessibility metadata when available:
+  - `resId`
+  - `hint`
+  - compact `meta` (`role=...;state=...;type=...;error=...`)
+- Legacy grouped/fixture TOON keeps a stable preferred column order:
+  - `id`, `resId`, `role`, `state`, `error`, `inputType`, `hint`, `text`, `contentDesc`
+- `scroll` is intentionally unsupported in this library revision.
+- Grammar still enumerates only actionable ids.
+- Parser remains tolerant to legacy JSON responses for compatibility during rollout.
+- The native library validates that `set_text` can target only ids that belong to the `editable` group and rejects placeholder-text insertions.
+- `done` still requires the app-gate and signal-based validation, and now also enforces a plan-aware minimum history floor.
 - On failure, the library returns `path_json = "[]"` and an error status/message.
-- On Android, the generated TOON payload is written to `adb logcat` with tag `loki_action`.
+- On Android, logs are stage-based and compact (`PLAN`, `GATE`, `PASS`, `MODEL`, `PARSED`, `DONE-GATE`).
 
 ## Android build command
 
