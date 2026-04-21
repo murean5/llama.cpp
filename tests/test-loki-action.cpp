@@ -69,8 +69,13 @@ int main() {
         "plain navigation request should not be treated as text-edit intent"
     );
 
+<<<<<<< Updated upstream
     const auto grammar = loki_action::build_action_response_grammar({7, 12, 23}, {12}, true, false, true);
     assert_true(grammar.find("done-response") != std::string::npos, "grammar should include done branch");
+=======
+<<<<<<< Updated upstream
+    const auto grammar = loki_action::build_action_response_grammar({7, 12, 23}, {12});
+>>>>>>> Stashed changes
     assert_true(grammar.find("click-response") != std::string::npos, "grammar should include click branch");
     assert_true(grammar.find("set-text-response") != std::string::npos, "grammar should include set_text branch");
     assert_true(grammar.find("back-response") == std::string::npos, "grammar should not include back by default");
@@ -78,7 +83,26 @@ int main() {
     assert_true(grammar.find("set-text-id-value ::= \"12\"") != std::string::npos, "set_text ids should be limited to editable ids");
     assert_true(grammar.find(R"("\"done\"")") != std::string::npos, "grammar should mention done");
 
+<<<<<<< Updated upstream
     const auto editable_grammar = loki_action::build_action_response_grammar({7, 12, 23}, {12}, false, false, false);
+=======
+    const auto editable_grammar = loki_action::build_action_response_grammar({7, 12, 23}, {12}, false);
+=======
+    const auto grammar = loki_action::build_action_response_grammar({7, 12, 23}, {12}, {23}, true, false, true);
+    assert_true(grammar.find("done-response") != std::string::npos, "grammar should include done branch");
+    assert_true(grammar.find("click-response") != std::string::npos, "grammar should include click branch");
+    assert_true(grammar.find("set-text-response") != std::string::npos, "grammar should include set_text branch");
+    assert_true(grammar.find("scroll-forward-response") != std::string::npos, "grammar should include scroll_forward branch");
+    assert_true(grammar.find("scroll-backward-response") != std::string::npos, "grammar should include scroll_backward branch");
+    assert_true(grammar.find("back-response") == std::string::npos, "grammar should not include back by default");
+    assert_true(grammar.find(R"("7")") != std::string::npos, "grammar should include allowed ids");
+    assert_true(grammar.find("set-text-id-value ::= \"12\"") != std::string::npos, "set_text ids should be limited to editable ids");
+    assert_true(grammar.find("scroll-id-value ::= \"23\"") != std::string::npos, "scroll ids should be limited to scrollable ids");
+    assert_true(grammar.find(R"("\"done\"")") != std::string::npos, "grammar should mention done");
+
+    const auto editable_grammar = loki_action::build_action_response_grammar({7, 12, 23}, {12}, {}, false, false, false);
+>>>>>>> Stashed changes
+>>>>>>> Stashed changes
     assert_true(
         editable_grammar.find("click-response") == std::string::npos,
         "editable grammar should not include click branch"
@@ -87,14 +111,32 @@ int main() {
         editable_grammar.find("set-text-response") != std::string::npos,
         "editable grammar should still include set_text branch"
     );
+    assert_true(
+        editable_grammar.find("scroll-forward-response") == std::string::npos,
+        "editable grammar should not include scroll branch"
+    );
 
+<<<<<<< Updated upstream
     const auto click_only_grammar = loki_action::build_action_response_grammar({7, 12, 23}, {}, true, false, false);
+=======
+<<<<<<< Updated upstream
+    const auto click_only_grammar = loki_action::build_action_response_grammar({7, 12, 23}, {});
+=======
+    const auto click_only_grammar = loki_action::build_action_response_grammar({7, 12, 23}, {}, {}, true, false, false);
+>>>>>>> Stashed changes
+>>>>>>> Stashed changes
     assert_true(
         click_only_grammar.find("set-text-response") == std::string::npos,
         "grammar without editable ids should not include set_text branch"
     );
 
+<<<<<<< Updated upstream
     const auto back_enabled_grammar = loki_action::build_action_response_grammar({7, 12, 23}, {12}, true, true, true);
+=======
+<<<<<<< Updated upstream
+=======
+    const auto back_enabled_grammar = loki_action::build_action_response_grammar({7, 12, 23}, {12}, {23}, true, true, true);
+>>>>>>> Stashed changes
     assert_true(
         back_enabled_grammar.find("back-response") != std::string::npos,
         "grammar with allow_back should include back branch"
@@ -104,6 +146,10 @@ int main() {
         "back grammar should use action_type field"
     );
 
+<<<<<<< Updated upstream
+=======
+>>>>>>> Stashed changes
+>>>>>>> Stashed changes
     const auto click_response = std::string(
         R"({"choices":[{"message":{"content":"{\"id\":7,\"action\":\"click\"}"}}]})"
     );
@@ -129,6 +175,7 @@ int main() {
     const auto set_text_phrase_action = loki_action::extract_action_response_from_chat_response(set_text_phrase_response);
     assert_true(set_text_phrase_action.text.has_value(), "phrase set_text should have text");
     assert_equals("привет, как дела?", *set_text_phrase_action.text, "phrase set_text payload mismatch");
+<<<<<<< Updated upstream
     assert_true(!set_text_phrase_action.done, "phrase set_text should not be done");
 
     const auto click_done_false_response = std::string(
@@ -167,6 +214,73 @@ int main() {
     loki_action::validate_action_response_for_grouped(grouped, set_text_action);
     loki_action::validate_action_response_for_grouped(grouped, back_action);
     loki_action::validate_action_response_for_grouped(grouped, done_action);
+=======
+<<<<<<< Updated upstream
+
+    loki_action::validate_action_response_for_grouped(grouped, click_action);
+    loki_action::validate_action_response_for_grouped(grouped, set_text_action);
+=======
+    assert_true(!set_text_phrase_action.done, "phrase set_text should not be done");
+
+    const auto scroll_forward_response = std::string(
+        R"({"choices":[{"message":{"content":"{\"id\":23,\"action\":\"scroll_forward\",\"done\":false}"}}]})"
+    );
+    const auto scroll_forward_action = loki_action::extract_action_response_from_chat_response(scroll_forward_response);
+    assert_true(scroll_forward_action.selected_id == 23, "scroll_forward selected id mismatch");
+    assert_equals("scroll_forward", scroll_forward_action.action_type, "scroll_forward action mismatch");
+    assert_true(!scroll_forward_action.text.has_value(), "scroll_forward action should not have text");
+
+    const auto scroll_backward_response = std::string(
+        R"({"choices":[{"message":{"content":"{\"id\":23,\"action\":\"scroll_backward\",\"done\":false}"}}]})"
+    );
+    const auto scroll_backward_action = loki_action::extract_action_response_from_chat_response(scroll_backward_response);
+    assert_true(scroll_backward_action.selected_id == 23, "scroll_backward selected id mismatch");
+    assert_equals("scroll_backward", scroll_backward_action.action_type, "scroll_backward action mismatch");
+    assert_true(!scroll_backward_action.text.has_value(), "scroll_backward action should not have text");
+
+    const auto click_done_false_response = std::string(
+        R"({"choices":[{"message":{"content":"{\"id\":7,\"action\":\"click\",\"done\":false}"}}]})"
+    );
+    const auto click_done_false_action =
+        loki_action::extract_action_response_from_chat_response(click_done_false_response);
+    assert_true(click_done_false_action.selected_id == 7, "click done=false selected id mismatch");
+    assert_equals("click", click_done_false_action.action_type, "click done=false action mismatch");
+    assert_true(!click_done_false_action.done, "click done=false should stay false");
+
+    const auto back_response = std::string(
+        R"({"choices":[{"message":{"content":"{\"action_type\":\"back\",\"done\":false}"}}]})"
+    );
+    const auto back_action = loki_action::extract_action_response_from_chat_response(back_response);
+    assert_true(back_action.selected_id == -1, "back selected id mismatch");
+    assert_equals("back", back_action.action_type, "back action mismatch");
+    assert_true(!back_action.text.has_value(), "back action should not have text");
+    assert_true(!back_action.done, "back action should not be done");
+
+    const auto legacy_back_response = std::string(
+        R"({"choices":[{"message":{"content":"{\"action\":\"back\",\"done\":false}"}}]})"
+    );
+    const auto legacy_back_action = loki_action::extract_action_response_from_chat_response(legacy_back_response);
+    assert_true(legacy_back_action.selected_id == -1, "legacy back selected id mismatch");
+    assert_equals("back", legacy_back_action.action_type, "legacy back action mismatch");
+
+    const auto done_response = std::string(R"({"choices":[{"message":{"content":"{\"done\":true}"}}]})");
+    const auto done_action = loki_action::extract_action_response_from_chat_response(done_response);
+    assert_true(done_action.done, "done response should set done=true");
+    assert_true(done_action.selected_id == -1, "done response should not select id");
+    assert_true(done_action.action_type.empty(), "done response should not have action");
+    assert_true(!done_action.text.has_value(), "done response should not have text");
+
+    loki_action::validate_action_response_for_grouped(grouped, click_action);
+    loki_action::validate_action_response_for_grouped(grouped, set_text_action);
+    loki_action::validate_action_response_for_grouped(grouped, back_action);
+    loki_action::validate_action_response_for_grouped(grouped, done_action);
+    const auto grouped_with_scrollable = json::parse(
+        R"({"scrollable":[{"id":23,"path":[0],"class":"android.widget.ScrollView","text":"Results"}]})"
+    );
+    loki_action::validate_action_response_for_grouped(grouped_with_scrollable, scroll_forward_action);
+    loki_action::validate_action_response_for_grouped(grouped_with_scrollable, scroll_backward_action);
+>>>>>>> Stashed changes
+>>>>>>> Stashed changes
 
     const auto no_match_response = std::string(R"({"choices":[{"message":{"content":"{\"id\":-1}"}}]})");
     const auto no_match_action = loki_action::extract_action_response_from_chat_response(no_match_response);

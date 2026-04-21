@@ -32,12 +32,35 @@ namespace loki_action {
 
 namespace {
 
+<<<<<<< Updated upstream
 constexpr const char* SYSTEM_PROMPT = R"(Android UI agent. Pick one JSON action matching grammar.
 1) If search/find goal and editable field visible, use set_text with search value
 2) Click direct visible target matching goal
 3) back only for explicit exit/wrong app
 4) {"done":true} only if goal ALREADY visibly complete on screen
 5) Never repeat last HistSig)";
+=======
+<<<<<<< Updated upstream
+constexpr const char * SYSTEM_PROMPT =
+    "You get a user request and visible Android UI elements. "
+    "Pick the best matching element and action using both the request and the screen. "
+    "Reply only as JSON. "
+    "Use {\"id\":<id>,\"action\":\"click\"} for one-step clicks and for non-editable search bars or containers that only open a text field. "
+    "Use {\"id\":<id>,\"action\":\"set_text\",\"text\":\"...\"} only when that id belongs to an editable element already visible on the screen. "
+    "For set_text, return only the exact value to type, not the whole user command. "
+    "Extract the intended query or replacement text from the request, for example user 'find daddy in search' -> text 'daddy', user 'найди мне котиков' -> text 'котики'. "
+    "Use {\"id\":-1} if no match.";
+=======
+constexpr const char* SYSTEM_PROMPT = R"(Android UI agent. Pick one JSON action matching grammar.
+1) {"done":true} if goal visibly complete
+2) If you see the exact target in the list - click it. Do NOT open search. Do NOT type. Just click.
+3) set_text on editable for input goals (value only)
+4) scroll only if target not visible but reachable
+5) back only for explicit exit/back intent
+6) Never repeat last HistSig
+PlanSteps are hints only. Rule 2 always wins.)";
+>>>>>>> Stashed changes
+>>>>>>> Stashed changes
 
 constexpr const char * EDITABLE_PRIORITY_PROMPT =
     "Editable ids only. "
@@ -46,9 +69,22 @@ constexpr const char * EDITABLE_PRIORITY_PROMPT =
     "{\"id\":-1} if no fit.";
 
 constexpr const char * CLICK_FALLBACK_PROMPT =
+<<<<<<< Updated upstream
     "No editable fit. "
     "{\"done\":true} if complete. "
     "Else click or back. "
+=======
+<<<<<<< Updated upstream
+    "You get a user request and visible Android UI elements. "
+    "No editable match was chosen. Pick the best remaining one-step click target. "
+    "Reply only as JSON. "
+    "Use {\"id\":<id>,\"action\":\"click\"} for clicks. "
+    "Use {\"id\":-1} if no match.";
+=======
+    "No editable fit. "
+    "{\"done\":true} if complete. "
+    "Else click, scroll, or back. "
+>>>>>>> Stashed changes
     "No signature repeat. "
     "{\"id\":-1} if no fit.";
 
@@ -59,8 +95,13 @@ constexpr const char * DIRECT_CLICK_PRIORITY_PROMPT =
     "{\"id\":-1} if no fit.";
 
 constexpr const char * DONE_CHECK_PROMPT =
+<<<<<<< Updated upstream
     "Goal ALREADY complete on current screen? "
     "{\"done\":true} only if target element/screen/state visibly matches goal. "
+=======
+    "Completion check. "
+    "{\"done\":true} if goal visibly satisfied. "
+>>>>>>> Stashed changes
     "Else {\"id\":-1}.";
 
 constexpr const char * STATE_PRIORITY_PROMPT =
@@ -69,12 +110,36 @@ constexpr const char * STATE_PRIORITY_PROMPT =
     "Else {\"id\":<id>,\"action\":\"click\",\"done\":false}. "
     "{\"id\":-1} if no fit.";
 
+<<<<<<< Updated upstream
 constexpr const char * STEP_EXTRACTOR_PROMPT = R"(Break user task into Android UI execution steps. JSON only:
 {"goal":"...","apps":["..."],"steps":["..."],"done_when":"..."}
 - 2-4 imperative steps (verbs: click, set_text, back)
 - 0-3 app names (contacts, phone, settings, etc.)
 - goal: concise, concrete
 - done_when: screen state that means task is complete)";
+=======
+constexpr const char * SCROLL_UP_PRIORITY_PROMPT =
+    "Target not visible. One upward scroll. "
+    "{\"id\":<id>,\"action\":\"scroll_backward\",\"done\":false}. "
+    "{\"id\":-1} if no fit.";
+
+constexpr const char * SCROLL_DOWN_PRIORITY_PROMPT =
+    "Upward scroll insufficient. One downward scroll. "
+    "{\"id\":<id>,\"action\":\"scroll_forward\",\"done\":false}. "
+    "{\"id\":-1} if no fit.";
+
+constexpr const char * STEP_EXTRACTOR_PROMPT = R"(Break user task into Android UI execution steps. JSON only:
+{"goal":"...","apps":["..."],"steps":["..."]}
+Rules:
+- 2-4 steps, verbs: click, set_text, scroll, back
+- 0-3 app names
+- goal: short and concrete
+- If task has a person name: step is "click [name] in list". NEVER "search for [name]".
+- Use search only if NO name is given (e.g. "find a plumber").
+Example: task="open mom contact"
+{"goal":"open mom contact","apps":["contacts"],"steps":["click Contacts app","click mom in list"]})";
+>>>>>>> Stashed changes
+>>>>>>> Stashed changes
 
 #if defined(ANDROID)
 constexpr const char * LOG_TAG = "loki_action";
@@ -573,6 +638,11 @@ HttpPostResult post_json_via_socket(
     return result;
 }
 
+<<<<<<< Updated upstream
+=======
+<<<<<<< Updated upstream
+=======
+>>>>>>> Stashed changes
 bool starts_with_literal(const std::string & value, const std::string & prefix) {
     return value.size() >= prefix.size() && value.compare(0, prefix.size(), prefix) == 0;
 }
@@ -730,6 +800,15 @@ std::string build_history_signature(
 }
 
 char detect_history_action_code(const std::string & action_line) {
+<<<<<<< Updated upstream
+=======
+    if (action_line.find("scroll_forward") != std::string::npos) {
+        return 'f';
+    }
+    if (action_line.find("scroll_backward") != std::string::npos) {
+        return 'r';
+    }
+>>>>>>> Stashed changes
     if (action_line.find("set_text") != std::string::npos) {
         return 't';
     }
@@ -901,10 +980,13 @@ std::string build_user_content_from_context(
                 user_content += compact_single_line(extracted_plan->steps[i], 96);
             }
         }
+<<<<<<< Updated upstream
         if (!extracted_plan->done_when.empty()) {
             user_content += "\nDoneWhen: ";
             user_content += compact_single_line(extracted_plan->done_when, 96);
         }
+=======
+>>>>>>> Stashed changes
     }
     if (!context.history_entries.empty()) {
         user_content += "\nHistoryFull:";
@@ -951,6 +1033,10 @@ std::string build_user_content_from_context(
     return user_content;
 }
 
+<<<<<<< Updated upstream
+=======
+>>>>>>> Stashed changes
+>>>>>>> Stashed changes
 std::string build_user_content(
     const std::string & user_prompt,
     const std::string & screen_name,
@@ -1175,12 +1261,22 @@ void log_multiline_toon(const std::string & toon, int step_number) {
         const auto chunk = toon.substr(i, std::min(chunk_size, toon.size() - i));
         LOKI_LOGI("STEP %d TOON[%zu]: %s", step_number, i, chunk.c_str());
     }
+<<<<<<< Updated upstream
+=======
+<<<<<<< Updated upstream
+    LOKI_LOGI("TOON END");
+=======
+>>>>>>> Stashed changes
     LOKI_LOGI("STEP %d TOON END", step_number);
 }
 
 std::string build_steps_extractor_grammar() {
     std::string grammar;
+<<<<<<< Updated upstream
     grammar += "root ::= ws \"{\" ws \"\\\"goal\\\"\" ws \":\" ws json-string ws \",\" ws \"\\\"apps\\\"\" ws \":\" ws apps-array ws \",\" ws \"\\\"steps\\\"\" ws \":\" ws steps-array ws \",\" ws \"\\\"done_when\\\"\" ws \":\" ws json-string ws \"}\" ws\n";
+=======
+    grammar += "root ::= ws \"{\" ws \"\\\"goal\\\"\" ws \":\" ws json-string ws \",\" ws \"\\\"apps\\\"\" ws \":\" ws apps-array ws \",\" ws \"\\\"steps\\\"\" ws \":\" ws steps-array ws \"}\" ws\n";
+>>>>>>> Stashed changes
     grammar += "apps-array ::= \"[\" ws \"]\" | \"[\" ws json-string ws \"]\" | \"[\" ws json-string ws \",\" ws json-string ws \"]\" | \"[\" ws json-string ws \",\" ws json-string ws \",\" ws json-string ws \"]\"\n";
     grammar += "steps-array ::= \"[\" ws json-string ws \"]\" | \"[\" ws json-string ws \",\" ws json-string ws \"]\" | \"[\" ws json-string ws \",\" ws json-string ws \",\" ws json-string ws \"]\" | \"[\" ws json-string ws \",\" ws json-string ws \",\" ws json-string ws \",\" ws json-string ws \"]\"\n";
     grammar += "json-string ::= \"\\\"\" json-char* \"\\\"\"\n";
@@ -1212,6 +1308,10 @@ std::string build_steps_extractor_user_content(
         }
     }
     return out;
+<<<<<<< Updated upstream
+=======
+>>>>>>> Stashed changes
+>>>>>>> Stashed changes
 }
 
 json build_chat_request_payload(
@@ -1422,6 +1522,11 @@ model_action_response parse_action_response_json(const json & parsed) {
         throw std::runtime_error("model response must be a JSON object");
     }
 
+<<<<<<< Updated upstream
+=======
+<<<<<<< Updated upstream
+=======
+>>>>>>> Stashed changes
     auto parse_action_name = [&parsed]() -> std::optional<std::string> {
         const auto action_type_it = parsed.find("action_type");
         if (action_type_it != parsed.end() && action_type_it->is_string()) {
@@ -1489,8 +1594,17 @@ model_action_response parse_action_response_json(const json & parsed) {
             result.action_type = "click";
             return result;
         }
+<<<<<<< Updated upstream
         if (lowered_action != "set_text") {
             throw std::runtime_error("model response action must be click, set_text, or back");
+=======
+        if (lowered_action == "scroll_forward" || lowered_action == "scroll_backward") {
+            result.action_type = lowered_action;
+            return result;
+        }
+        if (lowered_action != "set_text") {
+            throw std::runtime_error("model response action must be click, set_text, scroll_forward, scroll_backward, or back");
+>>>>>>> Stashed changes
         }
 
         const auto text_it = parsed.find("text");
@@ -1514,6 +1628,10 @@ model_action_response parse_action_response_json(const json & parsed) {
         return result;
     }
 
+<<<<<<< Updated upstream
+=======
+>>>>>>> Stashed changes
+>>>>>>> Stashed changes
     const auto id_it = parsed.find("id");
     if (id_it == parsed.end()) {
         throw std::runtime_error("model response is missing id");
@@ -1535,8 +1653,19 @@ model_action_response parse_action_response_json(const json & parsed) {
     if (result.action_type == "click") {
         return result;
     }
+    if (result.action_type == "scroll_forward" || result.action_type == "scroll_backward") {
+        return result;
+    }
     if (result.action_type != "set_text") {
+<<<<<<< Updated upstream
         throw std::runtime_error("model response action must be click, set_text, or back");
+=======
+<<<<<<< Updated upstream
+        throw std::runtime_error("model response action must be click or set_text");
+=======
+        throw std::runtime_error("model response action must be click, set_text, scroll_forward, or scroll_backward");
+>>>>>>> Stashed changes
+>>>>>>> Stashed changes
     }
 
     const auto text_it = parsed.find("text");
@@ -1575,6 +1704,11 @@ const char * duplicate_c_string(const std::string & value) {
 
 } // namespace
 
+<<<<<<< Updated upstream
+=======
+<<<<<<< Updated upstream
+=======
+>>>>>>> Stashed changes
 prompt_context parse_prompt_context(const std::string & raw_prompt) {
     prompt_context context;
     context.task = trim_copy(raw_prompt);
@@ -1718,16 +1852,23 @@ std::optional<extracted_steps_plan> parse_steps_extractor_content(const std::str
         if (apps_it != parsed.end()) {
             plan.apps = parse_compact_string_array(*apps_it, 3, 32);
         }
+<<<<<<< Updated upstream
         const auto done_when_it = parsed.find("done_when");
         if (done_when_it != parsed.end() && done_when_it->is_string()) {
             plan.done_when = compact_single_line(done_when_it->get<std::string>(), 96);
         }
+=======
+>>>>>>> Stashed changes
         return plan;
     } catch (const json::exception &) {
         return std::nullopt;
     }
 }
 
+<<<<<<< Updated upstream
+=======
+>>>>>>> Stashed changes
+>>>>>>> Stashed changes
 json group_by_attrs_textual(const json & tree) {
     json grouped = json::object();
     int32_t next_id = 1;
@@ -1784,6 +1925,11 @@ bool prompt_requests_text_edit(const std::string & user_prompt) {
         contains_any_substring(user_prompt, russian_keywords);
 }
 
+<<<<<<< Updated upstream
+=======
+<<<<<<< Updated upstream
+=======
+>>>>>>> Stashed changes
 static bool prompt_requests_lookup_input(const std::string & user_prompt) {
     const auto lowered_ascii = to_lower_ascii(user_prompt);
     const std::vector<std::string> english_keywords = {
@@ -1814,6 +1960,22 @@ static bool prompt_requests_state_change(const std::string & user_prompt) {
         contains_any_substring(user_prompt, russian_keywords);
 }
 
+<<<<<<< Updated upstream
+=======
+static bool prompt_requests_scroll_intent(const std::string & user_prompt) {
+    const auto lowered_ascii = to_lower_ascii(user_prompt);
+    const std::vector<std::string> english_keywords = {
+        "scroll", "swipe", "more results", "more items", "next items", "show more", "list down", "list up"
+    };
+    const std::vector<std::string> russian_keywords = {
+        u8"скролл", u8"пролист", u8"листай", u8"свайп", u8"покажи еще", u8"ниже", u8"выше"
+    };
+
+    return contains_any_substring(lowered_ascii, english_keywords) ||
+        contains_any_substring(user_prompt, russian_keywords);
+}
+
+>>>>>>> Stashed changes
 static bool prompt_requests_back_navigation(const std::string & user_prompt) {
     const auto lowered_ascii = to_lower_ascii(user_prompt);
     const auto lowered_multilang = to_lower_basic_multilang(user_prompt);
@@ -1873,6 +2035,10 @@ static desired_state_t detect_desired_state(const std::string & user_prompt) {
     return desired_state_t::unknown;
 }
 
+<<<<<<< Updated upstream
+=======
+>>>>>>> Stashed changes
+>>>>>>> Stashed changes
 json prepare_for_toon(const json & grouped) {
     json cleaned = grouped;
     for (auto it = cleaned.begin(); it != cleaned.end(); ++it) {
@@ -1952,6 +2118,11 @@ std::string find_path_json_by_id(const json & grouped, int32_t selected_id) {
     return "";
 }
 
+<<<<<<< Updated upstream
+=======
+<<<<<<< Updated upstream
+=======
+>>>>>>> Stashed changes
 static const json * find_grouped_item_by_id(const json & grouped, int32_t selected_id) {
     for (auto it = grouped.begin(); it != grouped.end(); ++it) {
         if (!it.value().is_array()) {
@@ -2002,6 +2173,13 @@ static std::string build_candidate_signature(
         action_code = 't';
     } else if (response.action_type == "back") {
         action_code = 'b';
+<<<<<<< Updated upstream
+=======
+    } else if (response.action_type == "scroll_forward") {
+        action_code = 'f';
+    } else if (response.action_type == "scroll_backward") {
+        action_code = 'r';
+>>>>>>> Stashed changes
     }
 
     std::optional<int32_t> id;
@@ -2020,6 +2198,28 @@ static std::string build_candidate_signature(
     return build_history_signature(action_code, id, label, shorten_app_name(screen_name));
 }
 
+<<<<<<< Updated upstream
+=======
+static bool history_prefers_scroll_backward_first(const prompt_context & context, const std::string & screen_name) {
+    const auto current_app = shorten_app_name(screen_name);
+    for (auto it = context.history_signatures.rbegin(); it != context.history_signatures.rend(); ++it) {
+        const auto & signature = *it;
+        if (!current_app.empty() && signature.find("@" + current_app) == std::string::npos) {
+            continue;
+        }
+        if (!signature.empty() && signature[0] == 'f') {
+            return false;
+        }
+        if (!signature.empty() && signature[0] == 'r') {
+            return false;
+        }
+        break;
+    }
+    return true;
+}
+
+>>>>>>> Stashed changes
+>>>>>>> Stashed changes
 static std::vector<int32_t> collect_candidate_ids(const json & grouped) {
     std::vector<int32_t> ids;
     std::unordered_set<int32_t> seen;
@@ -2495,12 +2695,25 @@ static std::string build_id_rule(const std::vector<int32_t> & ids) {
 std::string build_action_response_grammar(
     const std::vector<int32_t> & ids,
     const std::vector<int32_t> & editable_ids,
+<<<<<<< Updated upstream
     bool allow_click,
     bool allow_back,
     bool allow_done
+=======
+<<<<<<< Updated upstream
+    bool allow_click
+=======
+    const std::vector<int32_t> & scrollable_ids,
+    bool allow_click,
+    bool allow_back,
+    bool allow_scroll,
+    bool allow_done
+>>>>>>> Stashed changes
+>>>>>>> Stashed changes
 ) {
     const std::string click_id_rule = build_id_rule(ids);
     const std::string editable_id_rule = build_id_rule(editable_ids);
+    const std::string scroll_id_rule = build_id_rule(scrollable_ids);
     std::string grammar;
     grammar += "root ::= ws (";
     if (allow_done) {
@@ -2515,6 +2728,9 @@ std::string build_action_response_grammar(
     }
     if (!editable_ids.empty()) {
         grammar += " | set-text-response";
+    }
+    if (allow_scroll && !scrollable_ids.empty()) {
+        grammar += " | scroll-forward-response | scroll-backward-response";
     }
     grammar += ") ws\n";
     if (allow_done) {
@@ -2536,6 +2752,13 @@ std::string build_action_response_grammar(
         grammar += editable_id_rule;
         grammar += "\n";
     }
+    if (allow_scroll && !scrollable_ids.empty()) {
+        grammar += "scroll-forward-response ::= \"{\" ws \"\\\"id\\\"\" ws \":\" ws scroll-id-value ws \",\" ws \"\\\"action\\\"\" ws \":\" ws \"\\\"scroll_forward\\\"\" ws \",\" ws \"\\\"done\\\"\" ws \":\" ws \"false\" ws \"}\"\n";
+        grammar += "scroll-backward-response ::= \"{\" ws \"\\\"id\\\"\" ws \":\" ws scroll-id-value ws \",\" ws \"\\\"action\\\"\" ws \":\" ws \"\\\"scroll_backward\\\"\" ws \",\" ws \"\\\"done\\\"\" ws \":\" ws \"false\" ws \"}\"\n";
+        grammar += "scroll-id-value ::= ";
+        grammar += scroll_id_rule;
+        grammar += "\n";
+    }
     grammar += "json-string ::= \"\\\"\" json-char* \"\\\"\"\n";
     grammar += "json-char ::= [^\"\\\\\\x0A\\x0D] | escape\n";
     grammar += "escape ::= \"\\\\\" ([\"\\\\/bfnrt] | (\"u\" hex hex hex hex))\n";
@@ -2553,6 +2776,11 @@ void validate_action_response_for_grouped(const json & grouped, const model_acti
         return;
     }
 
+<<<<<<< Updated upstream
+=======
+<<<<<<< Updated upstream
+=======
+>>>>>>> Stashed changes
     if (response.action_type.empty()) {
         if (response.selected_id < 0) {
             return;
@@ -2571,15 +2799,41 @@ void validate_action_response_for_grouped(const json & grouped, const model_acti
     }
 
     if (response.selected_id < 0) {
+<<<<<<< Updated upstream
         throw std::runtime_error("model response selected id must be non-negative for click/set_text");
     }
 
+=======
+        throw std::runtime_error("model response selected id must be non-negative for click/set_text/scroll");
+    }
+
+>>>>>>> Stashed changes
+>>>>>>> Stashed changes
     if (response.action_type == "click") {
         return;
     }
 
+    if (response.action_type == "scroll_forward" || response.action_type == "scroll_backward") {
+        if (response.text.has_value() && !trim_copy(*response.text).empty()) {
+            throw std::runtime_error("model response scroll action must not include text");
+        }
+        const auto scrollable_ids = collect_candidate_ids_for_attr(grouped, "scrollable");
+        if (std::find(scrollable_ids.begin(), scrollable_ids.end(), response.selected_id) == scrollable_ids.end()) {
+            throw std::runtime_error("model returned scroll action for non-scrollable id");
+        }
+        return;
+    }
+
     if (response.action_type != "set_text") {
+<<<<<<< Updated upstream
         throw std::runtime_error("model response action must be click, set_text, or back");
+=======
+<<<<<<< Updated upstream
+        throw std::runtime_error("model response action must be click or set_text");
+=======
+        throw std::runtime_error("model response action must be click, set_text, scroll_forward, scroll_backward, or back");
+>>>>>>> Stashed changes
+>>>>>>> Stashed changes
     }
 
     if (!response.text.has_value() || trim_copy(*response.text).empty()) {
@@ -2822,6 +3076,12 @@ LOKI_ACTION_API loki_action_result_t * loki_action_resolve_path(
         loki_action::log_multiline_toon(full_toon, prompt_context.step_number);
         const auto candidate_ids = loki_action::collect_candidate_ids(grouped);
         const auto editable_candidate_ids = loki_action::collect_candidate_ids_for_attr(grouped, "editable");
+<<<<<<< Updated upstream
+=======
+<<<<<<< Updated upstream
+=======
+        const auto scrollable_candidate_ids = loki_action::collect_candidate_ids_for_attr(grouped, "scrollable");
+>>>>>>> Stashed changes
         const auto state_candidate_ids = loki_action::collect_state_candidate_ids(grouped);
         const auto desired_state = loki_action::detect_desired_state(prompt_context.task);
         const auto task_match_terms = loki_action::extract_task_match_terms(prompt_context.task);
@@ -2836,6 +3096,10 @@ LOKI_ACTION_API loki_action_result_t * loki_action_resolve_path(
         );
         const bool has_direct_click_match = !direct_click_candidate_ids.empty();
         const bool has_searchable_editable = loki_action::grouped_has_searchable_editable(grouped);
+<<<<<<< Updated upstream
+=======
+>>>>>>> Stashed changes
+>>>>>>> Stashed changes
         std::vector<int32_t> non_editable_candidate_ids;
         non_editable_candidate_ids.reserve(candidate_ids.size());
         {
@@ -2865,21 +3129,42 @@ LOKI_ACTION_API loki_action_result_t * loki_action_resolve_path(
                                   const char * system_prompt,
                                   const std::vector<int32_t> & pass_ids,
                                   const std::vector<int32_t> & pass_editable_ids,
+<<<<<<< Updated upstream
                                   bool allow_click,
                                   bool allow_back = false,
+=======
+<<<<<<< Updated upstream
+                                  bool allow_click) -> std::optional<loki_action::model_action_response> {
+            if (pass_ids.empty()) {
+                LOKI_LOGI("MODEL PASS: %s skipped (no candidates)", pass_name);
+=======
+                                  const std::vector<int32_t> & pass_scrollable_ids,
+                                  bool allow_click,
+                                  bool allow_back = false,
+                                  bool allow_scroll = false,
+>>>>>>> Stashed changes
                                   bool allow_empty_candidates = false,
                                   bool allow_done = false) -> std::optional<loki_action::model_action_response> {
             if (pass_ids.empty() && !allow_empty_candidates) {
                 LOKI_LOGI("STEP %d MODEL PASS: %s skipped (no candidates)", prompt_context.step_number, pass_name);
+<<<<<<< Updated upstream
+=======
+>>>>>>> Stashed changes
+>>>>>>> Stashed changes
                 return std::nullopt;
             }
 
             const std::string grammar = loki_action::build_action_response_grammar(
                 pass_ids,
                 pass_editable_ids,
+<<<<<<< Updated upstream
                 allow_click,
                 allow_back,
                 allow_done
+=======
+<<<<<<< Updated upstream
+                allow_click
+>>>>>>> Stashed changes
             );
 
             LOKI_LOGI(
@@ -2888,9 +3173,33 @@ LOKI_ACTION_API loki_action_result_t * loki_action_resolve_path(
                 pass_name,
                 pass_ids.size(),
                 pass_editable_ids.size(),
+<<<<<<< Updated upstream
                 allow_click ? "true" : "false",
                 allow_back ? "true" : "false",
                 allow_done ? "true" : "false"
+=======
+                allow_click ? "true" : "false"
+=======
+                pass_scrollable_ids,
+                allow_click,
+                allow_back,
+                allow_scroll,
+                allow_done
+            );
+
+            LOKI_LOGI(
+                "STEP %d MODEL PASS: %s ids=%zu editable_ids=%zu scrollable_ids=%zu allow_click=%s allow_back=%s allow_scroll=%s allow_done=%s",
+                prompt_context.step_number,
+                pass_name,
+                pass_ids.size(),
+                pass_editable_ids.size(),
+                pass_scrollable_ids.size(),
+                allow_click ? "true" : "false",
+                allow_back ? "true" : "false",
+                allow_scroll ? "true" : "false",
+                allow_done ? "true" : "false"
+>>>>>>> Stashed changes
+>>>>>>> Stashed changes
             );
             LOKI_LOGI(
                 "STEP %d MODEL GRAMMAR: \"%s\"",
@@ -2983,6 +3292,7 @@ LOKI_ACTION_API loki_action_result_t * loki_action_resolve_path(
 
         loki_action::model_action_response action_response;
         bool has_action_response = false;
+<<<<<<< Updated upstream
         const bool prefers_text_edit = loki_action::prompt_requests_text_edit(prompt_context.task);
         const bool prefers_lookup_input = loki_action::prompt_requests_lookup_input(prompt_context.task);
         const bool prefers_back_navigation = loki_action::prompt_requests_back_navigation(prompt_context.task);
@@ -2993,20 +3303,73 @@ LOKI_ACTION_API loki_action_result_t * loki_action_resolve_path(
             (has_searchable_editable && prefers_lookup_input) ||
             (has_searchable_editable && prompt_context.repeated_tail_clicks >= 2)
         ) && !has_direct_click_match && !prefers_state_action;
+=======
+<<<<<<< Updated upstream
+        const bool prefers_text_edit = loki_action::prompt_requests_text_edit(user_prompt_copy);
+>>>>>>> Stashed changes
         LOKI_LOGI(
             "STEP %d PROMPT MODE: prefers_text_edit=%s prefers_lookup_input=%s prefers_back_navigation=%s prefers_state_action=%s desired_state=%d prefers_editable_input=%s direct_click_match=%s direct_click_ids=%zu state_candidates=%zu state_action_candidates=%zu searchable_editable=%s editable_candidates=%zu total_candidates=%zu history=%zu repeat_same_id=%d repeat_same_sig=%d",
             prompt_context.step_number,
             prefers_text_edit ? "true" : "false",
+<<<<<<< Updated upstream
             prefers_lookup_input ? "true" : "false",
             prefers_back_navigation ? "true" : "false",
+=======
+=======
+        const bool prefers_text_edit = loki_action::prompt_requests_text_edit(prompt_context.task);
+        const bool prefers_lookup_input = loki_action::prompt_requests_lookup_input(prompt_context.task);
+        const bool prefers_back_navigation = loki_action::prompt_requests_back_navigation(prompt_context.task);
+        const bool prefers_scroll_intent = loki_action::prompt_requests_scroll_intent(prompt_context.task);
+        const bool prefers_state_action =
+            loki_action::prompt_requests_state_change(prompt_context.task) && !state_candidate_ids.empty();
+        const bool history_indicates_stuck =
+            prompt_context.has_loop_hint ||
+            prompt_context.repeated_tail_same_signature >= 2 ||
+            prompt_context.repeated_tail_same_id >= 2 ||
+            prompt_context.repeated_tail_clicks >= 4;
+        const bool prefers_editable_input = !editable_candidate_ids.empty() && (
+            prefers_text_edit ||
+            (has_searchable_editable && prefers_lookup_input) ||
+            (has_searchable_editable && prompt_context.repeated_tail_clicks >= 2)
+        ) && !has_direct_click_match && !prefers_state_action;
+        const bool should_consider_scroll =
+            !scrollable_candidate_ids.empty() &&
+            !prefers_back_navigation &&
+            !prefers_state_action &&
+            !has_direct_click_match &&
+            !prefers_text_edit &&
+            !prefers_editable_input &&
+            (prefers_scroll_intent || history_indicates_stuck);
+        const bool prefer_scroll_backward_first =
+            should_consider_scroll &&
+            loki_action::history_prefers_scroll_backward_first(prompt_context, screen_name);
+        LOKI_LOGI(
+            "STEP %d PROMPT MODE: prefers_text_edit=%s prefers_lookup_input=%s prefers_back_navigation=%s prefers_scroll_intent=%s prefers_state_action=%s desired_state=%d prefers_editable_input=%s direct_click_match=%s direct_click_ids=%zu should_consider_scroll=%s prefer_scroll_backward_first=%s history_stuck=%s scrollable_candidates=%zu state_candidates=%zu state_action_candidates=%zu searchable_editable=%s editable_candidates=%zu total_candidates=%zu history=%zu repeat_same_id=%d repeat_same_sig=%d",
+            prompt_context.step_number,
+            prefers_text_edit ? "true" : "false",
+            prefers_lookup_input ? "true" : "false",
+            prefers_back_navigation ? "true" : "false",
+            prefers_scroll_intent ? "true" : "false",
+>>>>>>> Stashed changes
             prefers_state_action ? "true" : "false",
             static_cast<int>(desired_state),
             prefers_editable_input ? "true" : "false",
             has_direct_click_match ? "true" : "false",
             direct_click_candidate_ids.size(),
+<<<<<<< Updated upstream
             state_candidate_ids.size(),
             state_action_candidate_ids.size(),
             has_searchable_editable ? "true" : "false",
+=======
+            should_consider_scroll ? "true" : "false",
+            prefer_scroll_backward_first ? "true" : "false",
+            history_indicates_stuck ? "true" : "false",
+            scrollable_candidate_ids.size(),
+            state_candidate_ids.size(),
+            state_action_candidate_ids.size(),
+            has_searchable_editable ? "true" : "false",
+>>>>>>> Stashed changes
+>>>>>>> Stashed changes
             editable_candidate_ids.size(),
             candidate_ids.size(),
             prompt_context.history_tokens.size(),
@@ -3014,6 +3377,7 @@ LOKI_ACTION_API loki_action_result_t * loki_action_resolve_path(
             prompt_context.repeated_tail_same_signature
         );
 
+<<<<<<< Updated upstream
         auto try_accept_model_response = [&](const loki_action::model_action_response & candidate,
                                              const char * pass_name) -> bool {
             if (candidate.done) {
@@ -3063,12 +3427,96 @@ LOKI_ACTION_API loki_action_result_t * loki_action_resolve_path(
         };
 
         try {
+=======
+<<<<<<< Updated upstream
+        try {
+            if (prefers_text_edit && !editable_candidate_ids.empty()) {
+=======
+        auto try_accept_model_response = [&](const loki_action::model_action_response & candidate,
+                                             const char * pass_name) -> bool {
+            if (candidate.done) {
+                const auto done_check = loki_action::validate_done_response(grouped, prompt_context.task, prompt_context);
+                if (!done_check.accepted) {
+                    LOKI_LOGI(
+                        "STEP %d DONE REJECTED: pass=%s reason=%s",
+                        prompt_context.step_number,
+                        pass_name,
+                        done_check.reason.c_str()
+                    );
+                    return false;
+                }
+
+                LOKI_LOGI(
+                    "STEP %d DONE ACCEPTED: pass=%s reason=%s",
+                    prompt_context.step_number,
+                    pass_name,
+                    done_check.reason.c_str()
+                );
+            }
+
+            if (!candidate.done &&
+                std::strcmp(pass_name, "scroll-up-priority") == 0 &&
+                candidate.action_type != "scroll_backward" &&
+                candidate.selected_id >= 0) {
+                LOKI_LOGI(
+                    "STEP %d ACTION REJECTED: pass=%s reason=expected-scroll-backward got=%s",
+                    prompt_context.step_number,
+                    pass_name,
+                    candidate.action_type.c_str()
+                );
+                return false;
+            }
+            if (!candidate.done &&
+                std::strcmp(pass_name, "scroll-down-priority") == 0 &&
+                candidate.action_type != "scroll_forward" &&
+                candidate.selected_id >= 0) {
+                LOKI_LOGI(
+                    "STEP %d ACTION REJECTED: pass=%s reason=expected-scroll-forward got=%s",
+                    prompt_context.step_number,
+                    pass_name,
+                    candidate.action_type.c_str()
+                );
+                return false;
+            }
+
+            if (!candidate.done && !prompt_context.history_signatures.empty()) {
+                const auto candidate_signature = loki_action::build_candidate_signature(candidate, grouped, screen_name);
+                const size_t check_depth = std::min<size_t>(3, prompt_context.history_signatures.size());
+                for (size_t i = 0; i < check_depth; ++i) {
+                    const auto & past_sig = prompt_context.history_signatures[
+                        prompt_context.history_signatures.size() - 1 - i
+                    ];
+                    if (candidate_signature == past_sig) {
+                        LOKI_LOGI(
+                            "STEP %d ACTION REJECTED: pass=%s reason=repeat-signature-in-last-%zu sig=%s",
+                            prompt_context.step_number,
+                            pass_name,
+                            i + 1,
+                            candidate_signature.c_str()
+                        );
+                        return false;
+                    }
+                }
+            }
+
+            action_response = candidate;
+            has_action_response = true;
+            return true;
+        };
+
+        try {
+>>>>>>> Stashed changes
             if (!has_action_response && !prompt_context.history_tokens.empty()) {
                 const auto done_check_response = run_model_pass(
                     "done-check",
                     loki_action::DONE_CHECK_PROMPT,
                     {},
                     {},
+<<<<<<< Updated upstream
+=======
+                    {},
+                    false,
+>>>>>>> Stashed changes
                     false,
                     false,
                     true,
@@ -3087,8 +3535,15 @@ LOKI_ACTION_API loki_action_result_t * loki_action_resolve_path(
                     loki_action::STATE_PRIORITY_PROMPT,
                     state_ids_for_pass,
                     {},
+<<<<<<< Updated upstream
                     true,
                     prefers_back_navigation
+=======
+                    {},
+                    true,
+                    prefers_back_navigation,
+                    false
+>>>>>>> Stashed changes
                 );
                 if (state_response.has_value() &&
                     (state_response->done || state_response->selected_id >= 0)) {
@@ -3102,8 +3557,15 @@ LOKI_ACTION_API loki_action_result_t * loki_action_resolve_path(
                     loki_action::DIRECT_CLICK_PRIORITY_PROMPT,
                     direct_click_candidate_ids,
                     {},
+<<<<<<< Updated upstream
                     true,
                     prefers_back_navigation
+=======
+                    {},
+                    true,
+                    prefers_back_navigation,
+                    false
+>>>>>>> Stashed changes
                 );
                 if (direct_click_response.has_value() &&
                     (direct_click_response->done || direct_click_response->selected_id >= 0)) {
@@ -3112,15 +3574,54 @@ LOKI_ACTION_API loki_action_result_t * loki_action_resolve_path(
             }
 
             if (prefers_editable_input) {
+<<<<<<< Updated upstream
+=======
+>>>>>>> Stashed changes
+>>>>>>> Stashed changes
                 const auto editable_response = run_model_pass(
                     "editable-priority",
                     loki_action::EDITABLE_PRIORITY_PROMPT,
                     editable_candidate_ids,
                     editable_candidate_ids,
+                    {},
                     false
                 );
                 if (editable_response.has_value() && editable_response->selected_id >= 0) {
                     (void) try_accept_model_response(*editable_response, "editable-priority");
+                }
+            }
+
+            if (!has_action_response && should_consider_scroll && prefer_scroll_backward_first) {
+                const auto scroll_up_response = run_model_pass(
+                    "scroll-up-priority",
+                    loki_action::SCROLL_UP_PRIORITY_PROMPT,
+                    scrollable_candidate_ids,
+                    {},
+                    scrollable_candidate_ids,
+                    false,
+                    false,
+                    true
+                );
+                if (scroll_up_response.has_value() &&
+                    (scroll_up_response->done || scroll_up_response->selected_id >= 0)) {
+                    (void) try_accept_model_response(*scroll_up_response, "scroll-up-priority");
+                }
+            }
+
+            if (!has_action_response && should_consider_scroll && !prefer_scroll_backward_first) {
+                const auto scroll_down_response = run_model_pass(
+                    "scroll-down-priority",
+                    loki_action::SCROLL_DOWN_PRIORITY_PROMPT,
+                    scrollable_candidate_ids,
+                    {},
+                    scrollable_candidate_ids,
+                    false,
+                    false,
+                    true
+                );
+                if (scroll_down_response.has_value() &&
+                    (scroll_down_response->done || scroll_down_response->selected_id >= 0)) {
+                    (void) try_accept_model_response(*scroll_down_response, "scroll-down-priority");
                 }
             }
 
@@ -3137,8 +3638,19 @@ LOKI_ACTION_API loki_action_result_t * loki_action_resolve_path(
                     fallback_to_non_editable ? loki_action::CLICK_FALLBACK_PROMPT : loki_action::SYSTEM_PROMPT,
                     fallback_ids,
                     fallback_editable_ids,
+<<<<<<< Updated upstream
                     true,
                     prefers_back_navigation
+=======
+<<<<<<< Updated upstream
+                    true
+=======
+                    scrollable_candidate_ids,
+                    true,
+                    prefers_back_navigation,
+                    should_consider_scroll
+>>>>>>> Stashed changes
+>>>>>>> Stashed changes
                 );
                 if (fallback_response.has_value()) {
                     (void) try_accept_model_response(

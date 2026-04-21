@@ -19,6 +19,11 @@ struct model_action_response {
     bool done = false;
 };
 
+<<<<<<< Updated upstream
+=======
+<<<<<<< Updated upstream
+=======
+>>>>>>> Stashed changes
 struct prompt_context {
     std::string task;
     std::vector<std::string> history_tokens;
@@ -39,12 +44,19 @@ struct extracted_steps_plan {
     std::string goal;
     std::vector<std::string> apps;
     std::vector<std::string> steps;
+<<<<<<< Updated upstream
     std::string done_when;
+=======
+>>>>>>> Stashed changes
 };
 
 prompt_context parse_prompt_context(const std::string & raw_prompt);
 std::optional<extracted_steps_plan> parse_steps_extractor_content(const std::string & content);
 
+<<<<<<< Updated upstream
+=======
+>>>>>>> Stashed changes
+>>>>>>> Stashed changes
 json group_by_attrs_textual(const json & tree);
 json prepare_for_toon(const json & grouped);
 std::string json_to_toon(const json & prepared);
@@ -54,9 +66,21 @@ bool prompt_requests_text_edit(const std::string & user_prompt);
 std::string build_action_response_grammar(
     const std::vector<int32_t> & ids,
     const std::vector<int32_t> & editable_ids,
+<<<<<<< Updated upstream
     bool allow_click = true,
     bool allow_back = false,
     bool allow_done = true
+=======
+<<<<<<< Updated upstream
+    bool allow_click = true
+=======
+    const std::vector<int32_t> & scrollable_ids,
+    bool allow_click = true,
+    bool allow_back = false,
+    bool allow_scroll = false,
+    bool allow_done = true
+>>>>>>> Stashed changes
+>>>>>>> Stashed changes
 );
 model_action_response extract_action_response_from_chat_response(const std::string & response_body);
 void validate_action_response_for_grouped(const json & grouped, const model_action_response & response);
