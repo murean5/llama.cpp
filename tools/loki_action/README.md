@@ -11,7 +11,7 @@ and performs the full pipeline:
 2. group interactive candidates with stable numeric `id`
 3. build the TOON payload
 4. call local `llama.cpp` server at `POST /v1/chat/completions`
-5. parse action response like `{"id":7,"action":"click","done":false}` or `{"done":true}`
+5. parse a compact model response like `1:7`, `2:12:0`, `5`, `6`, or `0`
 6. resolve that `id` back to the original UI `path`
 
 ## Files
@@ -92,13 +92,22 @@ Semantics:
   - `stream = false`
   - `temperature = 0.0`
   - `max_tokens = 96`
-- Built-in system prompt asks the model to use the user request plus the visible screen and reply only as JSON:
+- Primary internal wire-format is compact numeric:
+  - `0` = no match
+  - `1:<id>` = click
+  - `2:<id>:<text_index>` = set_text
+  - `5` = back
+  - `6` = done
+- `text_index` points into native text candidates prepared before inference; the library resolves it back to UTF-8 text and exposes the final string via `result->text`.
+- Legacy JSON replies are still accepted as a compatibility fallback:
   - `{"id":7,"action":"click","done":false}`
   - `{"id":12,"action":"set_text","text":"котики","done":false}`
+  - `{"action":"back","done":false}`
   - `{"done":true}`
   - `{"id":-1}`
-- For backward compatibility, if the model omits `done` on an action response, the library treats it as `false`.
 - The native library validates that `set_text` can target only ids that belong to the `editable` group. If the model returns `set_text` for a non-editable id, the result is `LOKI_ACTION_STATUS_INVALID_RESPONSE`.
+- Runtime TOON shown to the model includes richer accessibility metadata for interactive nodes:
+  - `id | label | resId | hint | meta | attrs`
 - On failure, the library returns `path_json = "[]"` and an error status/message.
 - On Android, the generated TOON payload is written to `adb logcat` with tag `loki_action`.
 

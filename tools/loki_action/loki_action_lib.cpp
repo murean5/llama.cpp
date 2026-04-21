@@ -981,303 +981,6 @@ std::string join_compact(const std::vector<std::string> & items, const char * se
 
 std::string build_user_content_from_context(
     const prompt_context & context,
-bool starts_with_literal(const std::string & value, const std::string & prefix) {
-    return value.size() >= prefix.size() && value.compare(0, prefix.size(), prefix) == 0;
-}
-
-std::string trim_action_prefix(const std::string & history_line) {
-    size_t pos = 0;
-    while (pos < history_line.size() &&
-           (std::isdigit(static_cast<unsigned char>(history_line[pos])) != 0 ||
-            history_line[pos] == '.' || std::isspace(static_cast<unsigned char>(history_line[pos])) != 0)) {
-        ++pos;
-    }
-    return trim_copy(history_line.substr(pos));
-}
-
-std::optional<int32_t> extract_history_id(const std::string & action_line) {
-    const std::array<std::string, 2> markers = {"id=", "selected_id="};
-    for (const auto & marker : markers) {
-        const auto marker_pos = action_line.find(marker);
-        if (marker_pos == std::string::npos) {
-            continue;
-        }
-
-        size_t value_pos = marker_pos + marker.size();
-        while (value_pos < action_line.size() &&
-               std::isspace(static_cast<unsigned char>(action_line[value_pos])) != 0) {
-            ++value_pos;
-        }
-        if (value_pos >= action_line.size()) {
-            continue;
-        }
-
-        const bool negative = action_line[value_pos] == '-';
-        if (negative) {
-            ++value_pos;
-        }
-
-        size_t end_pos = value_pos;
-        while (end_pos < action_line.size() &&
-               std::isdigit(static_cast<unsigned char>(action_line[end_pos])) != 0) {
-            ++end_pos;
-        }
-
-        if (end_pos == value_pos) {
-            continue;
-        }
-
-        const std::string number = action_line.substr(
-            negative ? value_pos - 1 : value_pos,
-            end_pos - (negative ? value_pos - 1 : value_pos)
-        );
-        char * end_ptr = nullptr;
-        const long parsed = std::strtol(number.c_str(), &end_ptr, 10);
-        if (end_ptr != nullptr && end_ptr != number.c_str() && *end_ptr == '\0') {
-            return static_cast<int32_t>(parsed);
-        }
-    }
-    return std::nullopt;
-}
-
-std::optional<std::string> extract_history_marker_value(const std::string & action_line, const std::string & marker) {
-    const auto marker_pos = action_line.find(marker);
-    if (marker_pos == std::string::npos) {
-        return std::nullopt;
-    }
-
-    size_t value_pos = marker_pos + marker.size();
-    while (value_pos < action_line.size() &&
-           std::isspace(static_cast<unsigned char>(action_line[value_pos])) != 0) {
-        ++value_pos;
-    }
-    if (value_pos >= action_line.size()) {
-        return std::nullopt;
-    }
-
-    std::string result;
-    if (action_line[value_pos] == '\'' || action_line[value_pos] == '"') {
-        const char quote = action_line[value_pos];
-        ++value_pos;
-        size_t end_pos = value_pos;
-        while (end_pos < action_line.size() && action_line[end_pos] != quote) {
-            ++end_pos;
-        }
-        result = action_line.substr(value_pos, end_pos - value_pos);
-    } else {
-        size_t end_pos = value_pos;
-        while (end_pos < action_line.size() &&
-               std::isspace(static_cast<unsigned char>(action_line[end_pos])) == 0) {
-            ++end_pos;
-        }
-        result = action_line.substr(value_pos, end_pos - value_pos);
-    }
-
-    result = trim_copy(result);
-    if (result.empty()) {
-        return std::nullopt;
-    }
-    return result;
-}
-
-std::string shorten_app_name(const std::string & app) {
-    const auto trimmed = trim_copy(app);
-    if (trimmed.empty()) {
-        return "";
-    }
-    const auto dot_pos = trimmed.find_last_of('.');
-    if (dot_pos != std::string::npos && dot_pos + 1 < trimmed.size()) {
-        return trimmed.substr(dot_pos + 1);
-    }
-    return trimmed;
-}
-
-std::string compact_history_label(const std::string & action_line, char action_code) {
-    std::string label = extract_history_marker_value(action_line, "label=").value_or("");
-    if (label.empty()) {
-        const auto colon = action_line.find(':');
-        if (colon != std::string::npos && colon + 1 < action_line.size()) {
-            label = trim_copy(action_line.substr(colon + 1));
-        } else {
-            label = trim_copy(action_line);
-        }
-    }
-
-    if (label.empty()) {
-        return "";
-    }
-
-    if (label.size() > 36) {
-        label = label.substr(0, 36);
-    }
-    return std::string(1, action_code) + ":" + label;
-}
-
-std::string build_history_signature(
-    char action_code,
-    const std::optional<int32_t> & id,
-    const std::optional<std::string> & label,
-    const std::optional<std::string> & app
-) {
-    std::string out(1, action_code);
-    out += "#";
-    out += id.has_value() ? std::to_string(*id) : "-1";
-    if (app.has_value() && !trim_copy(*app).empty()) {
-        out += "@";
-        out += shorten_app_name(*app);
-    }
-    if (label.has_value() && !trim_copy(*label).empty()) {
-        out += ":";
-        auto compact = trim_copy(*label);
-        if (compact.size() > 24) {
-            compact = compact.substr(0, 24);
-        }
-        out += compact;
-    }
-    return out;
-}
-
-char detect_history_action_code(const std::string & action_line) {
-    if (action_line.find("set_text") != std::string::npos) {
-        return 't';
-    }
-    if (action_line.find("click") != std::string::npos) {
-        return 'c';
-    }
-    if (action_line.find("back") != std::string::npos || action_line.find(u8"назад") != std::string::npos) {
-        return 'b';
-    }
-    return 'a';
-}
-
-void append_history_entry(prompt_context & context, const std::string & raw_line) {
-    const auto action_line = trim_action_prefix(trim_copy(raw_line));
-    if (action_line.empty()) {
-        return;
-    }
-
-    const char action_code = detect_history_action_code(action_line);
-    const auto parsed_id = extract_history_id(action_line);
-    const auto label = extract_history_marker_value(action_line, "label=");
-    const auto app = extract_history_marker_value(action_line, "app=");
-    context.history_tokens.emplace_back(1, action_code);
-    if (parsed_id.has_value()) {
-        context.history_ids.push_back(*parsed_id);
-    }
-    const auto compact_label = compact_history_label(action_line, action_code);
-    if (!compact_label.empty()) {
-        context.history_labels.push_back(compact_label);
-    }
-    if (app.has_value()) {
-        context.history_apps.push_back(shorten_app_name(*app));
-    }
-    context.history_entries.push_back(action_line);
-    context.history_signatures.push_back(build_history_signature(action_code, parsed_id, label, app));
-}
-
-std::vector<std::string> split_inline_history_entries(const std::string & history_blob) {
-    std::vector<std::string> entries;
-    size_t cursor = 0;
-    while (cursor < history_blob.size()) {
-        while (cursor < history_blob.size() &&
-               std::isspace(static_cast<unsigned char>(history_blob[cursor])) != 0) {
-            ++cursor;
-        }
-        if (cursor >= history_blob.size()) {
-            break;
-        }
-
-        if (std::isdigit(static_cast<unsigned char>(history_blob[cursor])) == 0) {
-            break;
-        }
-        while (cursor < history_blob.size() &&
-               std::isdigit(static_cast<unsigned char>(history_blob[cursor])) != 0) {
-            ++cursor;
-        }
-        if (cursor >= history_blob.size() || history_blob[cursor] != '.') {
-            break;
-        }
-        ++cursor;
-        while (cursor < history_blob.size() &&
-               std::isspace(static_cast<unsigned char>(history_blob[cursor])) != 0) {
-            ++cursor;
-        }
-        const size_t entry_begin = cursor;
-        size_t entry_end = history_blob.size();
-        for (size_t i = cursor; i + 2 < history_blob.size(); ++i) {
-            if (history_blob[i] == '\n') {
-                entry_end = i;
-                break;
-            }
-            if (std::isdigit(static_cast<unsigned char>(history_blob[i])) != 0) {
-                size_t digits_end = i;
-                while (digits_end < history_blob.size() &&
-                       std::isdigit(static_cast<unsigned char>(history_blob[digits_end])) != 0) {
-                    ++digits_end;
-                }
-                if (digits_end < history_blob.size() &&
-                    history_blob[digits_end] == '.' &&
-                    digits_end + 1 < history_blob.size() &&
-                    std::isspace(static_cast<unsigned char>(history_blob[digits_end + 1])) != 0) {
-                    entry_end = i;
-                    break;
-                }
-            }
-        }
-        const auto entry = trim_copy(history_blob.substr(entry_begin, entry_end - entry_begin));
-        if (!entry.empty()) {
-            entries.push_back(entry);
-        }
-        cursor = entry_end;
-    }
-    return entries;
-}
-
-std::string compact_single_line(const std::string & raw, size_t max_len = 80) {
-    std::string compact;
-    compact.reserve(raw.size());
-    bool prev_space = false;
-    for (const char ch : raw) {
-        const bool is_space = std::isspace(static_cast<unsigned char>(ch)) != 0;
-        if (is_space) {
-            if (!prev_space) {
-                compact.push_back(' ');
-                prev_space = true;
-            }
-            continue;
-        }
-        compact.push_back(ch);
-        prev_space = false;
-    }
-    compact = trim_copy(compact);
-    if (compact.size() > max_len) {
-        compact.resize(max_len);
-    }
-    return compact;
-}
-
-std::string join_compact(const std::vector<std::string> & items, const char * separator, size_t max_items = 0) {
-    std::string out;
-    size_t emitted = 0;
-    for (const auto & item : items) {
-        const auto compact = compact_single_line(item);
-        if (compact.empty()) {
-            continue;
-        }
-        if (max_items > 0 && emitted >= max_items) {
-            break;
-        }
-        if (!out.empty()) {
-            out += separator;
-        }
-        out += compact;
-        emitted += 1;
-    }
-    return out;
-}
-
-std::string build_user_content_from_context(
-    const prompt_context & context,
     const std::string & screen_name,
     const std::string & toon,
     const std::optional<extracted_steps_plan> & extracted_plan,
@@ -1285,10 +988,6 @@ std::string build_user_content_from_context(
     const std::string & phase_goal = ""
 ) {
     std::string user_content;
-    user_content.reserve(context.task.size() + screen_name.size() + toon.size() + 192);
-    user_content += "Task: ";
-    user_content += context.task;
-    user_content += "\nApp: ";
     user_content.reserve(context.task.size() + screen_name.size() + toon.size() + 192);
     user_content += "Task: ";
     user_content += context.task;
@@ -1596,198 +1295,15 @@ void log_multiline_toon(const std::string & toon, int step_number) {
 #if !defined(ANDROID)
     (void) step_number;
 #endif
-uint32_t decode_utf8_codepoint(const std::string & input, size_t & cursor) {
-    const unsigned char lead = static_cast<unsigned char>(input[cursor]);
-    if (lead < 0x80) {
-        ++cursor;
-        return lead;
-    }
-
-    const auto remain = [&](size_t need) {
-        return cursor + need <= input.size();
-    };
-
-    if ((lead & 0xE0) == 0xC0 && remain(2)) {
-        const unsigned char b1 = static_cast<unsigned char>(input[cursor + 1]);
-        if ((b1 & 0xC0) == 0x80) {
-            const uint32_t cp = static_cast<uint32_t>(((lead & 0x1F) << 6) | (b1 & 0x3F));
-            cursor += 2;
-            return cp;
-        }
-    } else if ((lead & 0xF0) == 0xE0 && remain(3)) {
-        const unsigned char b1 = static_cast<unsigned char>(input[cursor + 1]);
-        const unsigned char b2 = static_cast<unsigned char>(input[cursor + 2]);
-        if ((b1 & 0xC0) == 0x80 && (b2 & 0xC0) == 0x80) {
-            const uint32_t cp = static_cast<uint32_t>(
-                ((lead & 0x0F) << 12) |
-                ((b1 & 0x3F) << 6) |
-                (b2 & 0x3F)
-            );
-            cursor += 3;
-            return cp;
-        }
-    } else if ((lead & 0xF8) == 0xF0 && remain(4)) {
-        const unsigned char b1 = static_cast<unsigned char>(input[cursor + 1]);
-        const unsigned char b2 = static_cast<unsigned char>(input[cursor + 2]);
-        const unsigned char b3 = static_cast<unsigned char>(input[cursor + 3]);
-        if ((b1 & 0xC0) == 0x80 && (b2 & 0xC0) == 0x80 && (b3 & 0xC0) == 0x80) {
-            const uint32_t cp = static_cast<uint32_t>(
-                ((lead & 0x07) << 18) |
-                ((b1 & 0x3F) << 12) |
-                ((b2 & 0x3F) << 6) |
-                (b3 & 0x3F)
-            );
-            cursor += 4;
-            return cp;
-        }
-    }
-
-    ++cursor;
-    return lead;
-}
-
-void append_utf8_codepoint(std::string & out, uint32_t cp) {
-    if (cp <= 0x7F) {
-        out.push_back(static_cast<char>(cp));
-        return;
-    }
-    if (cp <= 0x7FF) {
-        out.push_back(static_cast<char>(0xC0 | ((cp >> 6) & 0x1F)));
-        out.push_back(static_cast<char>(0x80 | (cp & 0x3F)));
-        return;
-    }
-    if (cp <= 0xFFFF) {
-        out.push_back(static_cast<char>(0xE0 | ((cp >> 12) & 0x0F)));
-        out.push_back(static_cast<char>(0x80 | ((cp >> 6) & 0x3F)));
-        out.push_back(static_cast<char>(0x80 | (cp & 0x3F)));
-        return;
-    }
-    out.push_back(static_cast<char>(0xF0 | ((cp >> 18) & 0x07)));
-    out.push_back(static_cast<char>(0x80 | ((cp >> 12) & 0x3F)));
-    out.push_back(static_cast<char>(0x80 | ((cp >> 6) & 0x3F)));
-    out.push_back(static_cast<char>(0x80 | (cp & 0x3F)));
-}
-
-uint32_t lowercase_codepoint(uint32_t cp) {
-    if (cp >= 'A' && cp <= 'Z') {
-        return cp + 32;
-    }
-    if (cp >= 0x0410 && cp <= 0x042F) {
-        return cp + 32;
-    }
-    if (cp == 0x0401) {
-        return 0x0451;
-    }
-    return cp;
-}
-
-std::string to_lower_basic_multilang(const std::string & input) {
-    std::string out;
-    out.reserve(input.size());
-    size_t cursor = 0;
-    while (cursor < input.size()) {
-        const uint32_t cp = decode_utf8_codepoint(input, cursor);
-        append_utf8_codepoint(out, lowercase_codepoint(cp));
-    }
-    return out;
-}
-
-bool ends_with_literal(const std::string & value, const std::string & suffix) {
-    return value.size() >= suffix.size() &&
-        value.compare(value.size() - suffix.size(), suffix.size(), suffix) == 0;
-}
-
-std::vector<std::string> split_terms_for_matching(const std::string & value) {
-    std::vector<std::string> terms;
-    std::string current;
-    current.reserve(24);
-
-    for (const unsigned char ch : value) {
-        const bool keep = (ch >= 0x80) || (std::isalnum(ch) != 0);
-        if (keep) {
-            current.push_back(static_cast<char>(ch));
-            continue;
-        }
-        if (!current.empty()) {
-            terms.push_back(current);
-            current.clear();
-        }
-    }
-    if (!current.empty()) {
-        terms.push_back(current);
-    }
-    return terms;
-}
-
-std::string normalize_match_term(std::string term) {
-    static const std::unordered_set<std::string> stop_words = {
-        "task", "history", "step", "goal", "next", "action", "done",
-        "open", "find", "search", "lookup", "look", "contact", "contacts", "video",
-        "videos", "channel", "song", "playlist", "person", "message", "text",
-        "please", "with", "from", "into", "for", "the", "and", "or", "to", "in", "on",
-        u8"задача", u8"история", u8"шаг", u8"цель",
-        u8"открой", u8"открыть", u8"найди", u8"найти", u8"поиск", u8"в", u8"во",
-        u8"на", u8"с", u8"со", u8"к", u8"ко", u8"по", u8"и", u8"или", u8"мне",
-        u8"контакт", u8"контакты", u8"контакта", u8"контактов", u8"видео", u8"канал",
-        u8"плейлист", u8"песня", u8"песню", u8"песни", u8"человек", u8"номер", u8"телефон"
-    };
-
-    if (term.size() < 3 || stop_words.find(term) != stop_words.end()) {
-        return "";
-    }
-
-    static const std::vector<std::string> russian_suffixes = {
-        u8"ями", u8"ами", u8"ого", u8"ему", u8"ому", u8"ыми", u8"ими",
-        u8"ой", u8"ей", u8"ам", u8"ям", u8"ах", u8"ях", u8"ом", u8"ем",
-        u8"ую", u8"юю", u8"а", u8"я", u8"у", u8"ю", u8"е", u8"ы", u8"и"
-    };
-    for (const auto & suffix : russian_suffixes) {
-        if (term.size() > suffix.size() + 2 && ends_with_literal(term, suffix)) {
-            term.resize(term.size() - suffix.size());
-            break;
-        }
-    }
-
-    if (term.size() < 3 || stop_words.find(term) != stop_words.end()) {
-        return "";
-    }
-    return term;
-}
-
-std::vector<std::string> extract_task_match_terms(const std::string & task) {
-    std::vector<std::string> result;
-    std::unordered_set<std::string> seen;
-
-    const std::string lowered = to_lower_basic_multilang(task);
-    const auto raw_terms = split_terms_for_matching(lowered);
-    for (const auto & raw_term : raw_terms) {
-        const auto normalized = normalize_match_term(raw_term);
-        if (normalized.empty()) {
-            continue;
-        }
-        if (seen.insert(normalized).second) {
-            result.push_back(normalized);
-        }
-    }
-    return result;
-}
-
-void log_multiline_toon(const std::string & toon, int step_number) {
-#if !defined(ANDROID)
-    (void) step_number;
-#endif
     if (toon.empty()) {
-        LOKI_LOGI("STEP %d TOON: <empty>", step_number);
         LOKI_LOGI("STEP %d TOON: <empty>", step_number);
         return;
     }
 
     constexpr size_t chunk_size = 300;
     LOKI_LOGI("STEP %d TOON BEGIN", step_number);
-    LOKI_LOGI("STEP %d TOON BEGIN", step_number);
     for (size_t i = 0; i < toon.size(); i += chunk_size) {
         const auto chunk = toon.substr(i, std::min(chunk_size, toon.size() - i));
-        LOKI_LOGI("STEP %d TOON[%zu]: %s", step_number, i, chunk.c_str());
         LOKI_LOGI("STEP %d TOON[%zu]: %s", step_number, i, chunk.c_str());
     }
     LOKI_LOGI("STEP %d TOON END", step_number);
@@ -1970,32 +1486,6 @@ std::vector<std::string> parse_compact_string_array(
     return out;
 }
 
-std::vector<std::string> parse_compact_string_array(
-    const json & value,
-    size_t max_items,
-    size_t max_item_len
-) {
-    std::vector<std::string> out;
-    if (!value.is_array()) {
-        return out;
-    }
-
-    for (const auto & item : value) {
-        if (!item.is_string()) {
-            continue;
-        }
-        const auto compact = compact_single_line(item.get<std::string>(), max_item_len);
-        if (compact.empty()) {
-            continue;
-        }
-        out.push_back(compact);
-        if (out.size() >= max_items) {
-            break;
-        }
-    }
-    return out;
-}
-
 int32_t parse_action_id_field(const json & value) {
     if (value.is_number_integer()) {
         return value.get<int32_t>();
@@ -2014,22 +1504,6 @@ int32_t parse_action_id_field(const json & value) {
     }
 
     throw std::runtime_error("model response id is not an integer");
-}
-
-bool parse_done_field(const json & value) {
-    if (value.is_boolean()) {
-        return value.get<bool>();
-    }
-    if (value.is_string()) {
-        const auto lowered = to_lower_ascii(trim_copy(value.get<std::string>()));
-        if (lowered == "true") {
-            return true;
-        }
-        if (lowered == "false") {
-            return false;
-        }
-    }
-    throw std::runtime_error("model response done is not a boolean");
 }
 
 bool parse_done_field(const json & value) {
@@ -2293,7 +1767,6 @@ model_action_response parse_action_response_json(const json & parsed) {
     model_action_response result;
     result.selected_id = parse_action_id_field(*id_it);
     result.done = false;
-    result.done = false;
     if (result.selected_id < 0) {
         return result;
     }
@@ -2304,12 +1777,10 @@ model_action_response parse_action_response_json(const json & parsed) {
     }
 
     result.action_type = to_lower_ascii(trim_copy(action_it->get<std::string>()));
-    result.action_type = to_lower_ascii(trim_copy(action_it->get<std::string>()));
     if (result.action_type == "click") {
         return result;
     }
     if (result.action_type != "set_text") {
-        throw std::runtime_error("model response action must be click, set_text, or back");
         throw std::runtime_error("model response action must be click, set_text, or back");
     }
 
@@ -3338,95 +2809,6 @@ static desired_state_t detect_desired_state(const std::string & user_prompt) {
     return desired_state_t::unknown;
 }
 
-static bool prompt_requests_lookup_input(const std::string & user_prompt) {
-    const auto lowered_ascii = to_lower_ascii(user_prompt);
-    const std::vector<std::string> english_keywords = {
-        "find", "open", "search", "look up", "lookup", "contact", "video", "channel", "song", "playlist", "person"
-    };
-    const std::vector<std::string> russian_keywords = {
-        u8"найди", u8"найти", u8"открой", u8"открыть", u8"поиск", u8"контакт", u8"видео",
-        u8"канал", u8"песн", u8"плейлист", u8"челов", u8"маму", u8"мама"
-    };
-
-    return contains_any_substring(lowered_ascii, english_keywords) ||
-        contains_any_substring(user_prompt, russian_keywords);
-}
-
-static bool prompt_requests_state_change(const std::string & user_prompt) {
-    const auto lowered_ascii = to_lower_ascii(user_prompt);
-    const std::vector<std::string> english_keywords = {
-        "turn on", "turn off", "enable", "disable", "switch on", "switch off",
-        "toggle", "check", "uncheck", "activate", "deactivate"
-    };
-    const std::vector<std::string> russian_keywords = {
-        u8"включи", u8"включить", u8"выключи", u8"выключить",
-        u8"активируй", u8"деактивируй", u8"переключи", u8"переключить",
-        u8"отметь", u8"сними отметку", u8"галочка"
-    };
-
-    return contains_any_substring(lowered_ascii, english_keywords) ||
-        contains_any_substring(user_prompt, russian_keywords);
-}
-
-static bool prompt_requests_back_navigation(const std::string & user_prompt) {
-    const auto lowered_ascii = to_lower_ascii(user_prompt);
-    const auto lowered_multilang = to_lower_basic_multilang(user_prompt);
-    const std::vector<std::string> english_keywords = {
-        "go back", "back", "go out", "exit", "leave", "return", "not in ", "wrong app", "wrong screen"
-    };
-    const std::vector<std::string> russian_keywords = {
-        u8"назад", u8"вернись", u8"вернуться", u8"выйди", u8"выйти", u8"закрой",
-        u8"не в ", u8"не там", u8"не тот экран", u8"выйти из", u8"вернуться из"
-    };
-
-    return contains_any_substring(lowered_ascii, english_keywords) ||
-        contains_any_substring(lowered_multilang, russian_keywords);
-}
-
-enum class desired_state_t {
-    unknown = 0,
-    enabled = 1,
-    disabled = 2,
-};
-
-static bool prompt_wants_enabled_state(const std::string & user_prompt) {
-    const auto lowered_ascii = to_lower_ascii(user_prompt);
-    const std::vector<std::string> english_keywords = {
-        "turn on", "enable", "switch on", "check", "activate"
-    };
-    const std::vector<std::string> russian_keywords = {
-        u8"включи", u8"включить", u8"включен", u8"включено", u8"активируй", u8"отметь"
-    };
-
-    return contains_any_substring(lowered_ascii, english_keywords) ||
-        contains_any_substring(user_prompt, russian_keywords);
-}
-
-static bool prompt_wants_disabled_state(const std::string & user_prompt) {
-    const auto lowered_ascii = to_lower_ascii(user_prompt);
-    const std::vector<std::string> english_keywords = {
-        "turn off", "disable", "switch off", "uncheck", "deactivate"
-    };
-    const std::vector<std::string> russian_keywords = {
-        u8"выключи", u8"выключить", u8"выключен", u8"выключено", u8"деактивируй", u8"сними отметку"
-    };
-
-    return contains_any_substring(lowered_ascii, english_keywords) ||
-        contains_any_substring(user_prompt, russian_keywords);
-}
-
-static desired_state_t detect_desired_state(const std::string & user_prompt) {
-    const bool wants_enabled = prompt_wants_enabled_state(user_prompt);
-    const bool wants_disabled = prompt_wants_disabled_state(user_prompt);
-    if (wants_enabled && !wants_disabled) {
-        return desired_state_t::enabled;
-    }
-    if (wants_disabled && !wants_enabled) {
-        return desired_state_t::disabled;
-    }
-    return desired_state_t::unknown;
-}
-
 json prepare_for_toon(const json & grouped) {
     json cleaned = grouped;
     for (auto it = cleaned.begin(); it != cleaned.end(); ++it) {
@@ -4094,14 +3476,6 @@ std::string build_action_response_grammar(
     if (allow_back) {
         grammar += " | back-response";
     }
-    grammar += "root ::= ws (";
-    if (allow_done) {
-        grammar += "done-response | ";
-    }
-    grammar += "no-match-response";
-    if (allow_back) {
-        grammar += " | back-response";
-    }
     if (allow_click && !ids.empty()) {
         grammar += " | click-response";
     }
@@ -4148,29 +3522,7 @@ model_action_response extract_action_response_from_chat_response(const std::stri
 
 void validate_action_response_for_grouped(const json & grouped, const model_action_response & response) {
     if (response.done) {
-    if (response.done) {
         return;
-    }
-
-    if (response.action_type.empty()) {
-        if (response.selected_id < 0) {
-            return;
-        }
-        throw std::runtime_error("model response missing action_type for selected id");
-    }
-
-    if (response.action_type == "back") {
-        if (response.selected_id != -1) {
-            throw std::runtime_error("model response back action must use selected_id=-1");
-        }
-        if (response.text.has_value() && !trim_copy(*response.text).empty()) {
-            throw std::runtime_error("model response back action must not include text");
-        }
-        return;
-    }
-
-    if (response.selected_id < 0) {
-        throw std::runtime_error("model response selected id must be non-negative for click/set_text");
     }
 
     if (response.action_type.empty()) {
@@ -4200,7 +3552,6 @@ void validate_action_response_for_grouped(const json & grouped, const model_acti
 
     if (response.action_type != "set_text") {
         throw std::runtime_error("model response action must be click, set_text, or back");
-        throw std::runtime_error("model response action must be click, set_text, or back");
     }
 
     if ((!response.text.has_value() || trim_copy(*response.text).empty()) && response.text_index < 0) {
@@ -4226,15 +3577,14 @@ const char * duplicate_c_string_global(const std::string & value) {
     return buffer;
 }
 
-loki_action_result_t * make_result_global(
+} // namespace loki_action
+
+static loki_action_result_t * make_result_global(
     loki_action_status_t status,
     int32_t selected_id,
     const std::string & path_json,
     const std::string & error_message,
     const std::optional<std::string> & action_type = std::nullopt,
-    const std::optional<std::string> & text = std::nullopt,
-    bool done = false,
-    bool path_is_null = false
     const std::optional<std::string> & text = std::nullopt,
     bool done = false,
     bool path_is_null = false
@@ -4246,12 +3596,9 @@ loki_action_result_t * make_result_global(
     result->status = status;
     result->selected_id = selected_id;
     result->path_json = path_is_null ? nullptr : duplicate_c_string_global(path_json);
-    result->path_json = path_is_null ? nullptr : duplicate_c_string_global(path_json);
     result->error_message = duplicate_c_string_global(error_message);
     result->action_type = action_type ? duplicate_c_string_global(*action_type) : nullptr;
     result->text = text ? duplicate_c_string_global(*text) : nullptr;
-    result->done = done;
-    if ((!path_is_null && result->path_json == nullptr && !path_json.empty()) ||
     result->done = done;
     if ((!path_is_null && result->path_json == nullptr && !path_json.empty()) ||
         (result->error_message == nullptr && !error_message.empty()) ||
@@ -4267,8 +3614,7 @@ loki_action_result_t * make_result_global(
     return result;
 }
 
-loki_action::json build_chat_request_payload_global(
-    const loki_action::prompt_context & context,
+static loki_action::json build_chat_request_payload_global(
     const loki_action::prompt_context & context,
     const std::string & screen_name,
     const std::string & toon,
@@ -4309,11 +3655,11 @@ loki_action::json build_chat_request_payload_global(
     };
 }
 
-std::string build_done_gate_grammar_global() {
+static std::string build_done_gate_grammar_global() {
     return "root ::= ws (\"0\" | \"1\") ws\nws ::= | \" \" ws | \"\\n\" ws | \"\\r\" ws | \"\\t\" ws\n";
 }
 
-loki_action::json build_done_gate_payload_global(
+static loki_action::json build_done_gate_payload_global(
     const loki_action::prompt_context & context,
     const std::string & screen_name,
     const std::vector<std::string> & static_lines,
@@ -4374,7 +3720,7 @@ loki_action::json build_done_gate_payload_global(
     };
 }
 
-bool parse_done_gate_content_global(const std::string & content) {
+static bool parse_done_gate_content_global(const std::string & content) {
     const auto trimmed = loki_action::trim_copy(content);
     if (trimmed == "1") {
         return true;
@@ -4385,7 +3731,7 @@ bool parse_done_gate_content_global(const std::string & content) {
     throw std::runtime_error("invalid done gate content");
 }
 
-loki_action::json build_step_extractor_payload_global(
+static loki_action::json build_step_extractor_payload_global(
     const loki_action::prompt_context & context,
     const std::string & screen_name,
     const std::string & current_app_short,
@@ -4424,7 +3770,7 @@ loki_action::json build_step_extractor_payload_global(
     };
 }
 
-std::optional<loki_action::extracted_steps_plan> run_steps_extractor_global(
+static std::optional<loki_action::extracted_steps_plan> run_steps_extractor_global(
     const loki_action::prompt_context & context,
     const std::string & screen_name,
     const std::string & current_app_short,
@@ -4500,11 +3846,7 @@ std::optional<loki_action::extracted_steps_plan> run_steps_extractor_global(
     }
 }
 
-} // namespace
-
-extern "C" {
-
-LOKI_ACTION_API loki_action_result_t * loki_action_resolve_path(
+extern "C" LOKI_ACTION_API loki_action_result_t * loki_action_resolve_path(
     const char * user_prompt,
     const char * screen_json,
     const char * host,
@@ -4525,7 +3867,6 @@ LOKI_ACTION_API loki_action_result_t * loki_action_resolve_path(
     try {
         stage = "copy_inputs";
         const std::string user_prompt_copy(user_prompt);
-        const auto prompt_context = loki_action::parse_prompt_context(user_prompt_copy);
         const auto prompt_context = loki_action::parse_prompt_context(user_prompt_copy);
         const std::string screen_json_copy(screen_json);
         const std::string host_copy = host != nullptr ? std::string(host) : std::string("127.0.0.1");
@@ -4709,7 +4050,6 @@ LOKI_ACTION_API loki_action_result_t * loki_action_resolve_path(
 
             stage = std::string("prepare_http:") + pass_name;
             const auto payload = build_chat_request_payload_global(
-                prompt_context,
                 prompt_context,
                 screen_name,
                 full_toon,
@@ -5066,7 +4406,6 @@ LOKI_ACTION_API loki_action_result_t * loki_action_resolve_path(
         }
 
         if (action_response.done) {
-        if (action_response.done) {
             return make_result_global(
                 LOKI_ACTION_STATUS_OK,
                 -1,
@@ -5155,38 +4494,6 @@ LOKI_ACTION_API loki_action_result_t * loki_action_resolve_path(
             );
         }
 
-        if (action_response.action_type == "back") {
-            return make_result_global(
-                LOKI_ACTION_STATUS_OK,
-                -1,
-                "",
-                "",
-                action_response.action_type,
-                std::nullopt,
-                false,
-                true
-            );
-        }
-
-        if (action_response.selected_id < 0) {
-            return make_result_global(
-                LOKI_ACTION_STATUS_ID_NOT_FOUND,
-                action_response.selected_id,
-                "[]",
-                "model returned no matching id"
-            );
-        }
-
-        const auto path_json = loki_action::find_path_json_by_id(grouped, action_response.selected_id);
-        if (path_json.empty()) {
-            return make_result_global(
-                LOKI_ACTION_STATUS_ID_NOT_FOUND,
-                action_response.selected_id,
-                "[]",
-                "selected id not found in path map"
-            );
-        }
-
         stage = "return_success";
         return make_result_global(
             LOKI_ACTION_STATUS_OK,
@@ -5194,8 +4501,6 @@ LOKI_ACTION_API loki_action_result_t * loki_action_resolve_path(
             path_json,
             "",
             action_response.action_type,
-            action_response.text,
-            false
             action_response.text,
             false
         );
@@ -5229,7 +4534,7 @@ LOKI_ACTION_API loki_action_result_t * loki_action_resolve_path(
     }
 }
 
-LOKI_ACTION_API void loki_action_result_destroy(loki_action_result_t * result) {
+extern "C" LOKI_ACTION_API void loki_action_result_destroy(loki_action_result_t * result) {
     if (result == nullptr) {
         return;
     }
@@ -5240,8 +4545,6 @@ LOKI_ACTION_API void loki_action_result_destroy(loki_action_result_t * result) {
     std::free(result);
 }
 
-LOKI_ACTION_API const char * loki_action_get_version(void) {
+extern "C" LOKI_ACTION_API const char * loki_action_get_version(void) {
     return "1.6.1";
 }
-
-} // extern "C"
