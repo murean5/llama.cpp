@@ -60,6 +60,16 @@ std::string build_runtime_toon_for_test(const json & root, const json & grouped)
 std::string find_path_json_by_id(const json & grouped, int32_t selected_id);
 json filter_grouped_by_ids(const json & grouped, const std::vector<int32_t> & ids);
 bool prompt_requests_text_edit(const std::string & user_prompt);
+std::vector<std::string> derive_text_candidates_for_test(
+    const std::string & task,
+    const std::optional<extracted_steps_plan> & extracted_plan
+);
+bool should_auto_accept_direct_click_for_test(
+    const json & grouped,
+    int32_t selected_id,
+    const std::vector<std::string> & task_terms,
+    const std::vector<std::string> & static_lines
+);
 std::string build_action_response_grammar(
     const std::vector<int32_t> & ids,
     const std::vector<int32_t> & editable_ids,

@@ -108,6 +108,12 @@ Semantics:
 - The native library validates that `set_text` can target only ids that belong to the `editable` group. If the model returns `set_text` for a non-editable id, the result is `LOKI_ACTION_STATUS_INVALID_RESPONSE`.
 - Runtime TOON shown to the model includes richer accessibility metadata for interactive nodes:
   - `id | label | resId | hint | meta | attrs`
+- If Loki screen JSON provides visual metadata, `loki_action` also derives compact prominence markers for prompt use:
+  - `title`
+  - `top`
+  - `size=xl` / `size=l`
+- These markers are used internally to make `done` stricter and to correlate visible static anchors with direct interactive targets.
+- `done` for lookup-like tasks is accepted only when the target looks like a prominent page title or strong top-of-screen header, not just a matching list row.
 - On failure, the library returns `path_json = "[]"` and an error status/message.
 - On Android, the generated TOON payload is written to `adb logcat` with tag `loki_action`.
 

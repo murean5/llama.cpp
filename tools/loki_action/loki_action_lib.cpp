@@ -40,8 +40,12 @@ Think briefly:
 3) What single next action remains?
 
 Follow PhaseGoal first.
+Treat MainTitle/MainTexts as the strongest clue about current screen identity.
+Choose only from interactive items.
+When opening an app, prefer the item whose label best matches ExpectedApps. Do not switch to a sibling app from the same family if the primary app is visible.
 Prefer current visible tree over search/input.
 Use set_text only for visible editable ids.
+Use click for buttons/containers, set_text only for real input, and click for toggles unless checked/unchecked state clearly says otherwise.
 Use back only for explicit back/exit/wrong-app situations.
 Never repeat blocked history signatures.
 Return only the compact numeric code allowed by grammar.)";
@@ -53,17 +57,20 @@ constexpr const char * EDITABLE_PRIORITY_PROMPT =
 
 constexpr const char * CLICK_FALLBACK_PROMPT =
     "Direct visible action only. "
+    "Choose interactive item with best label match to ExpectedApps or PhaseGoal. "
     "Prefer target already visible on current screen. "
     "Back only for explicit mismatch/back intent. "
     "Return only compact numeric code.";
 
 constexpr const char * DIRECT_CLICK_PRIORITY_PROMPT =
     "Current screen already shows strong visible target. "
+    "Choose the best matching interactive item. "
     "Prefer click on that target, not search or input. "
     "Return only compact numeric code.";
 
 constexpr const char * DONE_CHECK_PROMPT =
     "Current app already matches expected app. "
+    "MainTitle/MainTexts are the strongest identity clue for the current screen. "
     "Answer only 1 if goal is visibly complete now, else 0.";
 
 constexpr const char * STATE_PRIORITY_PROMPT =
@@ -74,7 +81,9 @@ constexpr const char * STATE_PRIORITY_PROMPT =
 constexpr const char * STEP_EXTRACTOR_PROMPT = R"(Break user task into Android UI execution steps. JSON only:
 {"goal":"...","apps":["..."],"steps":["..."],"phase_hints":["..."],"done_when":"..."}
 - Use CurrentApp, ScreenMode, VisibleStatic and TopInteractive.
+- Use MainTitle/MainTexts to infer what screen is already open.
 - If CurrentApp already matches target app, do not start with "Open <app>".
+- Put the most likely primary target app first in apps[].
 - If ScreenMode is other_app and task targets another app, first hint should return to launcher/home.
 - 2-4 imperative steps (verbs: click, set_text, back)
 - 0-4 app names (contacts, phone, dialer, settings, etc.)
@@ -261,6 +270,26 @@ json build_text_fields(const json & node) {
 
     if (!text && hint) {
         result["hint"] = *hint;
+    }
+
+    const auto text_size_it = node.find("textSizePx");
+    if (text_size_it != node.end() && text_size_it->is_number()) {
+        result["textSizePx"] = text_size_it->get<double>();
+    }
+
+    const auto text_size_unit_it = node.find("textSizeUnit");
+    if (text_size_unit_it != node.end() && text_size_unit_it->is_number_integer()) {
+        result["textSizeUnit"] = text_size_unit_it->get<int32_t>();
+    }
+
+    const auto layout_height_it = node.find("layoutHeightPx");
+    if (layout_height_it != node.end() && layout_height_it->is_number_integer()) {
+        result["layoutHeightPx"] = layout_height_it->get<int32_t>();
+    }
+
+    const auto top_region_it = node.find("topRegion");
+    if (top_region_it != node.end() && top_region_it->is_boolean()) {
+        result["topRegion"] = top_region_it->get<bool>();
     }
 
     return result;
@@ -984,6 +1013,7 @@ std::string build_user_content_from_context(
     const std::string & screen_name,
     const std::string & toon,
     const std::optional<extracted_steps_plan> & extracted_plan,
+    const std::vector<std::string> & main_text_lines = {},
     const std::string & screen_mode = "",
     const std::string & phase_goal = ""
 ) {
@@ -995,6 +1025,17 @@ std::string build_user_content_from_context(
     user_content += screen_name;
     user_content += "\nAppShort: ";
     user_content += shorten_app_name(screen_name);
+    if (!main_text_lines.empty()) {
+        user_content += "\nMainTitle: ";
+        user_content += loki_action::compact_single_line(main_text_lines.front(), 96);
+        if (main_text_lines.size() > 1) {
+            user_content += "\nMainTexts:";
+            for (const auto & line : main_text_lines) {
+                user_content += "\n- ";
+                user_content += loki_action::compact_single_line(line, 96);
+            }
+        }
+    }
     if (!screen_mode.empty()) {
         user_content += "\nScreenMode: ";
         user_content += screen_mode;
@@ -1088,7 +1129,7 @@ std::string build_user_content(
     const std::string & toon
 ) {
     const auto context = parse_prompt_context(user_prompt);
-    return build_user_content_from_context(context, screen_name, toon, std::nullopt, "", "");
+    return build_user_content_from_context(context, screen_name, toon, std::nullopt, {}, "", "");
 }
 
 bool contains_any_substring(const std::string & haystack, const std::vector<std::string> & needles) {
@@ -1329,6 +1370,7 @@ std::string build_steps_extractor_user_content(
     const std::string & current_app_short,
     const std::string & screen_mode,
     const std::vector<std::string> & static_lines,
+    const std::vector<std::string> & main_text_lines,
     const std::vector<std::string> & top_interactive
 ) {
     std::string out;
@@ -1341,6 +1383,15 @@ std::string build_steps_extractor_user_content(
     out += current_app_short;
     out += "\nScreenMode: ";
     out += screen_mode;
+    out += "\nMainTexts:";
+    if (main_text_lines.empty()) {
+        out += " none";
+    } else {
+        for (const auto & line : main_text_lines) {
+            out += "\n- ";
+            out += compact_single_line(line, 72);
+        }
+    }
     out += "\nVisibleStatic:";
     if (static_lines.empty()) {
         out += " none";
@@ -2025,19 +2076,60 @@ static std::vector<std::string> extract_quoted_segments(const std::string & inpu
 
 static std::string strip_common_target_prefixes(std::string value) {
     static const std::vector<std::string> prefixes = {
-        "find ", "search ", "search for ", "open ", "call ", "message ", "text ",
+        "find ", "search ", "search for ", "open ", "open contact ", "open contact with ",
+        "call ", "message ", "text ", "contact ", "contact with ", "contacts ",
+        "create contact ", "create new contact ", "set ", "type ",
         u8"найди ", u8"найти ", u8"поиск ", u8"открой ", u8"позвони ", u8"напиши ",
         u8"создай контакт ", u8"создай новый контакт ", u8"контакт ", u8"контакт с ",
-        u8"для ", u8"с "
+        u8"для ", u8"с ", u8"введи ", u8"ввести "
     };
-    const auto lowered = to_lower_basic_multilang(value);
-    for (const auto & prefix : prefixes) {
-        if (starts_with_literal(lowered, prefix) && value.size() > prefix.size()) {
-            value = trim_copy(value.substr(prefix.size()));
-            break;
+    bool changed = true;
+    while (changed) {
+        changed = false;
+        const auto lowered = to_lower_basic_multilang(value);
+        for (const auto & prefix : prefixes) {
+            if (starts_with_literal(lowered, prefix) && value.size() > prefix.size()) {
+                value = trim_copy(value.substr(prefix.size()));
+                changed = true;
+                break;
+            }
         }
     }
     return trim_copy(value);
+}
+
+static std::string strip_wrapping_quotes(std::string value) {
+    value = trim_copy(value);
+    const std::array<std::pair<std::string, std::string>, 4> quotes = {{
+        {"\"", "\""},
+        {"'", "'"},
+        {u8"«", u8"»"},
+        {u8"“", u8"”"},
+    }};
+    bool changed = true;
+    while (changed) {
+        changed = false;
+        for (const auto & [open, close] : quotes) {
+            if (value.size() >= open.size() + close.size() &&
+                starts_with_literal(value, open) &&
+                value.compare(value.size() - close.size(), close.size(), close) == 0) {
+                value = trim_copy(value.substr(open.size(), value.size() - open.size() - close.size()));
+                changed = true;
+            }
+        }
+    }
+    return value;
+}
+
+static bool looks_like_instructional_text_candidate(const std::string & lowered_value) {
+    static const std::vector<std::string> bad_fragments = {
+        "open ", "click ", "tap ", "press ", "set_text", "set text", "type ", "enter ",
+        "find ", "search ", "search for ", "open app", "contacts app", "contact app",
+        "dialer app", "phone app", "return to ", "back to ",
+        u8"открой ", u8"нажми ", u8"кликни ", u8"введи ", u8"ввести ", u8"напиши ",
+        u8"найди ", u8"найти ", u8"поиск ", u8"вернись ", u8"назад "
+    };
+    return contains_any_substring(lowered_value, bad_fragments);
 }
 
 static std::vector<std::string> derive_text_candidates(
@@ -2048,7 +2140,7 @@ static std::vector<std::string> derive_text_candidates(
     std::unordered_set<std::string> seen;
 
     const auto push_candidate = [&](const std::string & raw_value) {
-        auto value = normalize_compact_label(strip_common_target_prefixes(raw_value), 64);
+        auto value = normalize_compact_label(strip_wrapping_quotes(strip_common_target_prefixes(raw_value)), 64);
         if (value.empty()) {
             return;
         }
@@ -2059,6 +2151,30 @@ static std::vector<std::string> derive_text_candidates(
         };
         for (const auto & bad : bad_values) {
             if (lowered == bad) {
+                return;
+            }
+        }
+        if (looks_like_instructional_text_candidate(lowered)) {
+            return;
+        }
+        for (size_t i = 0; i < result.size(); ++i) {
+            const auto existing_lowered = to_lower_basic_multilang(result[i]);
+            if (existing_lowered == lowered) {
+                return;
+            }
+            const bool new_extends_existing =
+                lowered.size() >= existing_lowered.size() + 1 &&
+                starts_with_literal(lowered, existing_lowered);
+            const bool existing_extends_new =
+                existing_lowered.size() >= lowered.size() + 1 &&
+                starts_with_literal(existing_lowered, lowered);
+            if (new_extends_existing) {
+                seen.erase(existing_lowered);
+                result[i] = value;
+                seen.insert(lowered);
+                return;
+            }
+            if (existing_extends_new) {
                 return;
             }
         }
@@ -2094,16 +2210,26 @@ static std::vector<std::string> derive_text_candidates(
                 push_candidate(candidate);
             }
         }
-        push_candidate(extracted_plan->goal);
         for (const auto & step : extracted_plan->steps) {
+            for (const auto & quoted : extract_quoted_segments(step)) {
+                push_candidate(quoted);
+            }
             push_candidate(step);
         }
+        push_candidate(extracted_plan->goal);
     }
 
     if (result.size() > 6) {
         result.resize(6);
     }
     return result;
+}
+
+std::vector<std::string> derive_text_candidates_for_test(
+    const std::string & task,
+    const std::optional<extracted_steps_plan> & extracted_plan
+) {
+    return derive_text_candidates(task, extracted_plan);
 }
 
 static std::string build_item_label_for_prompt(const json & item);
@@ -2150,6 +2276,16 @@ static std::vector<std::string> expand_expected_apps(const std::vector<std::stri
     return out;
 }
 
+static std::vector<std::string> primary_expected_apps(const std::vector<std::string> & expected_apps) {
+    for (const auto & app : expected_apps) {
+        const auto normalized = to_lower_basic_multilang(normalize_compact_label(app, 32));
+        if (!normalized.empty()) {
+            return {normalized};
+        }
+    }
+    return {};
+}
+
 static bool app_matches_expected(const std::string & current_app, const std::vector<std::string> & expected_apps);
 
 static bool looks_like_launcher_name(const std::string & app_short) {
@@ -2193,7 +2329,8 @@ static screen_mode_t detect_screen_mode(
     const std::vector<std::string> & static_lines,
     const std::vector<std::string> & top_interactive
 ) {
-    if (app_matches_expected(screen_name, expected_apps)) {
+    const auto primary_apps = primary_expected_apps(expected_apps);
+    if (app_matches_expected(screen_name, primary_apps.empty() ? expected_apps : primary_apps)) {
         return screen_mode_t::target_app;
     }
 
@@ -2268,6 +2405,83 @@ static bool step_is_open_target_app_step(const std::string & step, const std::ve
         }
     }
     return false;
+}
+
+static int score_label_against_expected_apps(
+    const std::string & label,
+    const std::vector<std::string> & primary_apps,
+    const std::vector<std::string> & related_apps
+) {
+    const auto lowered = to_lower_basic_multilang(label);
+    if (trim_copy(lowered).empty()) {
+        return 0;
+    }
+
+    int best_score = 0;
+    const auto consider = [&](const std::vector<std::string> & apps, int exact_score, int contains_score) {
+        for (const auto & app : apps) {
+            if (app.empty()) {
+                continue;
+            }
+            if (lowered == app) {
+                best_score = std::max(best_score, exact_score);
+                continue;
+            }
+            if (lowered.find(app) != std::string::npos) {
+                best_score = std::max(best_score, contains_score);
+            }
+        }
+    };
+
+    consider(primary_apps, 160, 110);
+    consider(related_apps, 70, 35);
+    return best_score;
+}
+
+static std::vector<int32_t> collect_app_click_match_ids(
+    const json & grouped,
+    const std::vector<std::string> & primary_apps,
+    const std::vector<std::string> & related_apps
+) {
+    std::vector<int32_t> ids;
+    const auto clickable_it = grouped.find("clickable");
+    if (clickable_it == grouped.end() || !clickable_it->is_array()) {
+        return ids;
+    }
+
+    int best_score = 0;
+    for (const auto & item : *clickable_it) {
+        const auto id_it = item.find("id");
+        if (id_it == item.end() || !id_it->is_number_integer()) {
+            continue;
+        }
+
+        std::string candidate_blob = build_item_label_for_prompt(item);
+        if (const auto res_id = normalized_field(item, "resId")) {
+            if (!candidate_blob.empty()) {
+                candidate_blob += " ";
+            }
+            candidate_blob += *res_id;
+        }
+
+        const int score = score_label_against_expected_apps(candidate_blob, primary_apps, related_apps);
+        if (score <= 0) {
+            continue;
+        }
+
+        const int32_t id = id_it->get<int32_t>();
+        if (score > best_score) {
+            best_score = score;
+            ids.clear();
+            ids.push_back(id);
+        } else if (score == best_score) {
+            ids.push_back(id);
+        }
+    }
+
+    std::sort(ids.begin(), ids.end());
+    ids.erase(std::unique(ids.begin(), ids.end()), ids.end());
+    return ids;
 }
 
 static std::vector<std::string> infer_apps_from_task(const std::string & task) {
@@ -2446,7 +2660,8 @@ static phase_gate_result build_phase_gate_result(
     bool prefers_back_navigation
 ) {
     phase_gate_result gate;
-    const bool app_match = app_matches_expected(screen_name, plan.apps);
+    const auto primary_apps = primary_expected_apps(plan.apps);
+    const bool app_match = app_matches_expected(screen_name, primary_apps.empty() ? plan.apps : primary_apps);
     const auto phase_step = select_relevant_phase_step(plan, app_match);
     gate.phase_goal = phase_step.empty() ? plan.goal : phase_step;
 
@@ -2466,7 +2681,7 @@ static phase_gate_result build_phase_gate_result(
         gate.allow_click = true;
         gate.allow_set_text = false;
         gate.allow_back = prefers_back_navigation;
-        gate.direct_click_ids = collect_direct_click_match_ids(grouped, join_compact(plan.apps, " ", 4));
+        gate.direct_click_ids = collect_app_click_match_ids(grouped, primary_apps, plan.apps);
         return gate;
     }
 
@@ -2527,6 +2742,163 @@ static std::string build_item_label_for_prompt(const json & item) {
     return "";
 }
 
+static bool item_has_attr(const json & item, const char * attr_name) {
+    const auto attrs_it = item.find("attrs");
+    if (attrs_it == item.end() || !attrs_it->is_array()) {
+        return false;
+    }
+    for (const auto & attr : *attrs_it) {
+        if (attr.is_string() && attr.get_ref<const std::string &>() == attr_name) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static std::optional<double> json_number_field(const json & item, const char * key) {
+    const auto it = item.find(key);
+    if (it == item.end() || !it->is_number()) {
+        return std::nullopt;
+    }
+    return it->get<double>();
+}
+
+static std::optional<int32_t> json_int_field(const json & item, const char * key) {
+    const auto it = item.find(key);
+    if (it == item.end() || !it->is_number_integer()) {
+        return std::nullopt;
+    }
+    return it->get<int32_t>();
+}
+
+static std::optional<bool> json_bool_field(const json & item, const char * key) {
+    const auto it = item.find(key);
+    if (it == item.end() || !it->is_boolean()) {
+        return std::nullopt;
+    }
+    return it->get<bool>();
+}
+
+struct prominence_snapshot {
+    bool has_text_size = false;
+    double text_size_px = 0.0;
+    int32_t layout_height_px = 0;
+    bool top_region = false;
+    bool heading = false;
+    bool title_like = false;
+    bool search_like = false;
+    std::string size_bucket;
+};
+
+struct prominence_screen_stats {
+    double max_text_size_px = 0.0;
+    int32_t max_layout_height_px = 0;
+};
+
+static bool looks_like_search_or_chrome_label(const std::string & label) {
+    const auto lowered = to_lower_basic_multilang(label);
+    return lowered.find("search") != std::string::npos ||
+        lowered.find(u8"поиск") != std::string::npos ||
+        lowered.find(u8"найти") != std::string::npos ||
+        lowered.find("filter") != std::string::npos ||
+        lowered.find(u8"фильтр") != std::string::npos ||
+        lowered.find("toolbar") != std::string::npos ||
+        lowered.find("tab") != std::string::npos;
+}
+
+static prominence_screen_stats collect_prominence_screen_stats(const std::vector<const json *> & items) {
+    prominence_screen_stats stats;
+    for (const auto * item_ptr : items) {
+        if (item_ptr == nullptr || !item_ptr->is_object()) {
+            continue;
+        }
+        if (const auto text_size = json_number_field(*item_ptr, "textSizePx")) {
+            if (*text_size > stats.max_text_size_px) {
+                stats.max_text_size_px = *text_size;
+            }
+        }
+        if (const auto layout_height = json_int_field(*item_ptr, "layoutHeightPx")) {
+            if (*layout_height > stats.max_layout_height_px) {
+                stats.max_layout_height_px = *layout_height;
+            }
+        }
+    }
+    return stats;
+}
+
+static prominence_snapshot compute_prominence_snapshot(
+    const json & item,
+    const prominence_screen_stats & stats
+) {
+    prominence_snapshot snapshot;
+    snapshot.heading = item_has_attr(item, "heading");
+    snapshot.top_region = json_bool_field(item, "topRegion").value_or(false);
+
+    if (const auto text_size = json_number_field(item, "textSizePx")) {
+        snapshot.has_text_size = *text_size > 0.0;
+        snapshot.text_size_px = *text_size;
+    }
+    if (const auto layout_height = json_int_field(item, "layoutHeightPx")) {
+        snapshot.layout_height_px = *layout_height;
+    }
+
+    const auto label = build_item_label_for_prompt(item);
+    snapshot.search_like = looks_like_search_or_chrome_label(label);
+
+    if (snapshot.has_text_size && stats.max_text_size_px > 0.0) {
+        const double ratio = snapshot.text_size_px / stats.max_text_size_px;
+        if (ratio >= 0.92) {
+            snapshot.size_bucket = "xl";
+        } else if (ratio >= 0.75) {
+            snapshot.size_bucket = "l";
+        } else if (ratio >= 0.55) {
+            snapshot.size_bucket = "m";
+        } else {
+            snapshot.size_bucket = "s";
+        }
+    } else if (snapshot.heading) {
+        snapshot.size_bucket = "xl";
+    } else if (stats.max_layout_height_px > 0 && snapshot.layout_height_px > 0) {
+        const double ratio = static_cast<double>(snapshot.layout_height_px) /
+            static_cast<double>(stats.max_layout_height_px);
+        if (ratio >= 0.9) {
+            snapshot.size_bucket = "xl";
+        } else if (ratio >= 0.7) {
+            snapshot.size_bucket = "l";
+        } else if (ratio >= 0.5) {
+            snapshot.size_bucket = "m";
+        } else {
+            snapshot.size_bucket = "s";
+        }
+    } else if (snapshot.top_region) {
+        snapshot.size_bucket = "m";
+    } else {
+        snapshot.size_bucket = "s";
+    }
+
+    const bool strong_bucket = snapshot.size_bucket == "xl" || snapshot.size_bucket == "l";
+    snapshot.title_like = !trim_copy(label).empty() &&
+        snapshot.top_region &&
+        !snapshot.search_like &&
+        (snapshot.heading || strong_bucket);
+    return snapshot;
+}
+
+static std::string build_prominence_marker_string(const prominence_snapshot & snapshot) {
+    std::vector<std::string> markers;
+    if (snapshot.title_like) {
+        markers.push_back("title");
+    }
+    if (snapshot.top_region) {
+        markers.push_back("top");
+    }
+    if (!snapshot.size_bucket.empty() &&
+        (snapshot.title_like || snapshot.size_bucket == "xl" || snapshot.size_bucket == "l")) {
+        markers.push_back("size=" + snapshot.size_bucket);
+    }
+    return join_compact(markers, ",", 4);
+}
+
 static std::string build_item_metadata_for_prompt(const json & item) {
     std::vector<std::string> parts;
     if (const auto role = normalized_field(item, "role")) {
@@ -2544,13 +2916,8 @@ static std::string build_item_metadata_for_prompt(const json & item) {
     return join_compact(parts, ";", 4);
 }
 
-static void collect_visible_static_lines_recursive(
-    const json & node,
-    std::vector<std::string> & out,
-    std::unordered_set<std::string> & seen,
-    size_t max_items
-) {
-    if (out.size() >= max_items || !node.is_object()) {
+static void collect_visible_static_node_refs_recursive(const json & node, std::vector<const json *> & out) {
+    if (!node.is_object()) {
         return;
     }
 
@@ -2558,10 +2925,7 @@ static void collect_visible_static_lines_recursive(
     if (!actionable) {
         const auto label = build_item_label_for_prompt(node);
         if (!label.empty()) {
-            const auto lowered = to_lower_basic_multilang(label);
-            if (seen.insert(lowered).second) {
-                out.push_back(label);
-            }
+            out.push_back(&node);
         }
     }
 
@@ -2570,18 +2934,260 @@ static void collect_visible_static_lines_recursive(
         return;
     }
     for (const auto & child : *children_it) {
-        collect_visible_static_lines_recursive(child, out, seen, max_items);
-        if (out.size() >= max_items) {
-            return;
+        collect_visible_static_node_refs_recursive(child, out);
+    }
+}
+
+struct runtime_static_line_candidate {
+    std::string line;
+    int score = 0;
+    size_t order = 0;
+};
+
+struct main_text_candidate {
+    std::string label;
+    std::string markers;
+    int score = 0;
+    size_t order = 0;
+};
+
+static size_t utf8_codepoint_count(const std::string & value) {
+    size_t count = 0;
+    for (unsigned char ch : value) {
+        if ((ch & 0xC0) != 0x80) {
+            ++count;
         }
     }
+    return count;
+}
+
+static bool label_is_meaningful_main_text(const std::string & raw_label) {
+    const auto label = trim_copy(compact_single_line(raw_label, 96));
+    if (label.empty()) {
+        return false;
+    }
+    const auto lowered = to_lower_basic_multilang(label);
+    if (looks_like_search_or_chrome_label(lowered)) {
+        return false;
+    }
+    if (lowered == "ok" || lowered == "on" || lowered == "off" ||
+        lowered == "yes" || lowered == "no" ||
+        lowered == u8"да" || lowered == u8"нет") {
+        return false;
+    }
+    if (utf8_codepoint_count(label) < 3) {
+        return false;
+    }
+
+    bool has_meaningful_char = false;
+    for (unsigned char ch : label) {
+        if (std::isalnum(ch) != 0 || ch >= 0x80) {
+            has_meaningful_char = true;
+            break;
+        }
+    }
+    return has_meaningful_char;
+}
+
+static void collect_all_labeled_node_refs_recursive(const json & node, std::vector<const json *> & out) {
+    if (!node.is_object()) {
+        return;
+    }
+    if (!build_item_label_for_prompt(node).empty()) {
+        out.push_back(&node);
+    }
+    const auto children_it = node.find("children");
+    if (children_it == node.end() || !children_it->is_array()) {
+        return;
+    }
+    for (const auto & child : *children_it) {
+        collect_all_labeled_node_refs_recursive(child, out);
+    }
+}
+
+static int score_main_text_candidate(
+    const json & item,
+    const prominence_snapshot & snapshot,
+    const std::string & label
+) {
+    int score = 0;
+    if (snapshot.title_like) {
+        score += 500;
+    }
+    if (snapshot.top_region) {
+        score += 140;
+    }
+    if (snapshot.size_bucket == "xl") {
+        score += 120;
+    } else if (snapshot.size_bucket == "l") {
+        score += 80;
+    } else if (snapshot.size_bucket == "m") {
+        score += 35;
+    }
+    if (snapshot.heading) {
+        score += 90;
+    }
+    if (item_has_attr(item, "editable")) {
+        score -= 120;
+    }
+    if (item_has_attr(item, "clickable")) {
+        score -= 20;
+    }
+    if (snapshot.search_like) {
+        score -= 250;
+    }
+    score += static_cast<int>(std::min<size_t>(18, utf8_codepoint_count(label)));
+    return score;
+}
+
+static std::vector<std::string> build_main_text_lines(const json & root, size_t max_items) {
+    std::vector<const json *> refs;
+    collect_all_labeled_node_refs_recursive(root, refs);
+    const auto stats = collect_prominence_screen_stats(refs);
+
+    std::unordered_map<std::string, main_text_candidate> best_by_label;
+    size_t order = 0;
+    for (const auto * node_ptr : refs) {
+        const auto label = build_item_label_for_prompt(*node_ptr);
+        if (!label_is_meaningful_main_text(label)) {
+            ++order;
+            continue;
+        }
+
+        const auto snapshot = compute_prominence_snapshot(*node_ptr, stats);
+        const int score = score_main_text_candidate(*node_ptr, snapshot, label);
+        if (score < 80) {
+            ++order;
+            continue;
+        }
+
+        std::vector<std::string> markers;
+        if (snapshot.title_like) {
+            markers.push_back("title");
+        }
+        if (snapshot.top_region) {
+            markers.push_back("top");
+        }
+        if (!snapshot.size_bucket.empty()) {
+            markers.push_back("size=" + snapshot.size_bucket);
+        }
+        if (snapshot.has_text_size) {
+            char buffer[32];
+            std::snprintf(buffer, sizeof(buffer), "%.1fpx", snapshot.text_size_px);
+            markers.push_back(buffer);
+        } else if (snapshot.layout_height_px > 0) {
+            markers.push_back("h=" + std::to_string(snapshot.layout_height_px));
+        }
+        const auto lowered = to_lower_basic_multilang(trim_copy(label));
+        auto it = best_by_label.find(lowered);
+        const auto marker_line = join_compact(markers, ",", 6);
+        if (it == best_by_label.end() || score > it->second.score) {
+            best_by_label[lowered] = main_text_candidate{
+                compact_single_line(label, 72),
+                marker_line,
+                score,
+                order
+            };
+        }
+        ++order;
+    }
+
+    std::vector<main_text_candidate> candidates;
+    candidates.reserve(best_by_label.size());
+    for (const auto & [_, candidate] : best_by_label) {
+        candidates.push_back(candidate);
+    }
+    std::sort(candidates.begin(), candidates.end(), [](const auto & lhs, const auto & rhs) {
+        if (lhs.score != rhs.score) {
+            return lhs.score > rhs.score;
+        }
+        return lhs.order < rhs.order;
+    });
+
+    std::vector<std::string> lines;
+    for (const auto & candidate : candidates) {
+        if (lines.size() >= max_items) {
+            break;
+        }
+        if (candidate.markers.empty()) {
+            lines.push_back(candidate.label);
+        } else {
+            lines.push_back(candidate.label + " | " + candidate.markers);
+        }
+    }
+    return lines;
+}
+
+static std::vector<std::string> build_visible_static_lines(const json & root, size_t max_items) {
+    std::vector<const json *> refs;
+    collect_visible_static_node_refs_recursive(root, refs);
+    const auto stats = collect_prominence_screen_stats(refs);
+
+    std::unordered_map<std::string, runtime_static_line_candidate> best_by_label;
+    size_t order = 0;
+    for (const auto * node_ptr : refs) {
+        const auto label = build_item_label_for_prompt(*node_ptr);
+        if (label.empty()) {
+            continue;
+        }
+
+        const auto snapshot = compute_prominence_snapshot(*node_ptr, stats);
+        const auto markers = build_prominence_marker_string(snapshot);
+        const std::string rendered = markers.empty() ? label : label + " | " + markers;
+        const auto lowered = to_lower_basic_multilang(label);
+
+        int score = 0;
+        if (snapshot.title_like) {
+            score += 400;
+        }
+        if (snapshot.top_region) {
+            score += 120;
+        }
+        if (snapshot.size_bucket == "xl") {
+            score += 90;
+        } else if (snapshot.size_bucket == "l") {
+            score += 60;
+        } else if (snapshot.size_bucket == "m") {
+            score += 25;
+        }
+        if (!snapshot.search_like) {
+            score += 20;
+        }
+
+        auto it = best_by_label.find(lowered);
+        if (it == best_by_label.end() || score > it->second.score) {
+            best_by_label[lowered] = runtime_static_line_candidate{rendered, score, order};
+        }
+        ++order;
+    }
+
+    std::vector<runtime_static_line_candidate> candidates;
+    candidates.reserve(best_by_label.size());
+    for (const auto & [_, candidate] : best_by_label) {
+        candidates.push_back(candidate);
+    }
+    std::sort(candidates.begin(), candidates.end(), [](const auto & lhs, const auto & rhs) {
+        if (lhs.score != rhs.score) {
+            return lhs.score > rhs.score;
+        }
+        return lhs.order < rhs.order;
+    });
+
+    std::vector<std::string> lines;
+    for (const auto & candidate : candidates) {
+        if (lines.size() >= max_items) {
+            break;
+        }
+        lines.push_back(candidate.line);
+    }
+    return lines;
 }
 
 static std::string build_interactive_toon(const json & grouped) {
     std::string out = "interactive:\n";
-    out += "  id | label | resId | hint | meta | attrs\n";
 
     const auto item_refs = collect_unique_item_refs(grouped);
+    const auto screen_stats = collect_prominence_screen_stats(item_refs);
     std::vector<const json *> sorted = item_refs;
     std::sort(sorted.begin(), sorted.end(), [](const json * lhs, const json * rhs) {
         const auto lhs_id = lhs->at("id").get<int32_t>();
@@ -2607,24 +3213,38 @@ static std::string build_interactive_toon(const json & grouped) {
         }
         std::sort(attrs.begin(), attrs.end());
         attrs.erase(std::unique(attrs.begin(), attrs.end()), attrs.end());
-        out += "  ";
-        out += std::to_string(id);
-        out += " | ";
-        out += build_item_label_for_prompt(item);
-        out += " | ";
-        if (const auto res_id = normalized_field(item, "resId")) {
-            out += *res_id;
+
+        std::vector<std::string> parts;
+        parts.push_back(std::to_string(id) + ")");
+
+        const auto label = build_item_label_for_prompt(item);
+        if (!label.empty()) {
+            parts.push_back(label);
         }
-        out += " | ";
+        const auto prominence = compute_prominence_snapshot(item, screen_stats);
+        const auto prominence_markers = build_prominence_marker_string(prominence);
+        if (!prominence_markers.empty()) {
+            parts.push_back(prominence_markers);
+        }
+        if (const auto res_id = normalized_field(item, "resId")) {
+            parts.push_back("res=" + *res_id);
+        }
         if (item.find("text") == item.end()) {
             if (const auto hint = normalized_field(item, "hint")) {
-                out += *hint;
+                parts.push_back("hint=" + normalize_compact_label(*hint, 48));
             }
         }
-        out += " | ";
-        out += build_item_metadata_for_prompt(item);
-        out += " | ";
-        out += join_compact(attrs, ",", 6);
+
+        const auto meta = build_item_metadata_for_prompt(item);
+        if (!meta.empty()) {
+            parts.push_back(meta);
+        }
+        if (!attrs.empty()) {
+            parts.push_back("attrs=" + join_compact(attrs, ",", 6));
+        }
+
+        out += "  ";
+        out += join_compact(parts, " | ", 0);
         out += "\n";
     }
     return out;
@@ -2635,9 +3255,7 @@ static std::string build_runtime_toon(
     const json & grouped,
     std::vector<std::string> * static_lines_out = nullptr
 ) {
-    std::vector<std::string> static_lines;
-    std::unordered_set<std::string> seen;
-    collect_visible_static_lines_recursive(root, static_lines, seen, 10);
+    std::vector<std::string> static_lines = build_visible_static_lines(root, 10);
     if (static_lines_out != nullptr) {
         *static_lines_out = static_lines;
     }
@@ -2828,7 +3446,9 @@ json prepare_for_toon(const json & grouped) {
 
 std::string json_to_toon(const json & prepared) {
     static const std::vector<std::string> preferred_columns = {
-        "id", "resId", "role", "state", "error", "inputType", "hint", "text", "contentDesc"
+        "id", "resId", "role", "state", "error", "inputType", "hint",
+        "textSizePx", "textSizeUnit", "layoutHeightPx", "topRegion",
+        "text", "contentDesc"
     };
 
     std::string out;
@@ -3086,6 +3706,10 @@ static item_match_stats score_item_for_terms(
 }
 
 static bool item_is_upper_region(const json & item) {
+    if (const auto top_region = json_bool_field(item, "topRegion")) {
+        return *top_region;
+    }
+
     const auto path_it = item.find("path");
     if (path_it == item.end() || !path_it->is_array() || path_it->empty()) {
         return false;
@@ -3102,6 +3726,24 @@ static bool item_is_upper_region(const json & item) {
     }
 
     return prefix_sum <= 3;
+}
+
+static bool item_has_strong_done_title_signal(
+    const json & item,
+    const prominence_screen_stats & screen_stats
+) {
+    const auto snapshot = compute_prominence_snapshot(item, screen_stats);
+    if (snapshot.search_like || !snapshot.top_region) {
+        return false;
+    }
+    if (snapshot.title_like) {
+        return true;
+    }
+    if (snapshot.size_bucket == "xl") {
+        return true;
+    }
+    return !snapshot.has_text_size &&
+        (snapshot.heading || snapshot.size_bucket == "l");
 }
 
 static std::vector<const json *> collect_unique_item_refs(const json & grouped) {
@@ -3290,9 +3932,10 @@ static done_validation_result validate_done_response(
     }
 
     const auto item_refs = collect_unique_item_refs(grouped);
+    const auto screen_stats = collect_prominence_screen_stats(item_refs);
     for (const json * item_ptr : item_refs) {
         const auto stats = score_item_for_terms(*item_ptr, task_terms);
-        if (stats.score < 7 || stats.matched_terms == 0 || stats.longest_term < 4) {
+        if (stats.matched_terms == 0 || stats.longest_term < 4) {
             continue;
         }
 
@@ -3314,9 +3957,10 @@ static done_validation_result validate_done_response(
             continue;
         }
 
-        if (item_is_upper_region(*item_ptr)) {
+        const bool strong_title_signal = item_has_strong_done_title_signal(*item_ptr, screen_stats);
+        if ((strong_title_signal && stats.score >= 4) || (!strong_title_signal && stats.score >= 7)) {
             result.accepted = true;
-            result.reason = "strong target match in upper region (required=" + std::to_string(min_history) + ")";
+            result.reason = "strong prominent target match (required=" + std::to_string(min_history) + ")";
             return result;
         }
     }
@@ -3366,6 +4010,67 @@ static int score_clickable_item_for_terms(
         }
     }
     return score;
+}
+
+static bool label_matches_visible_static(
+    const std::string & label,
+    const std::vector<std::string> & static_lines
+) {
+    const auto lowered_label = to_lower_basic_multilang(trim_copy(label));
+    if (lowered_label.empty()) {
+        return false;
+    }
+    for (const auto & line : static_lines) {
+        const auto lowered_line = to_lower_basic_multilang(trim_copy(line));
+        if (lowered_line.empty()) {
+            continue;
+        }
+        if (lowered_line == lowered_label ||
+            lowered_line.find(lowered_label) != std::string::npos ||
+            lowered_label.find(lowered_line) != std::string::npos) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static bool should_auto_accept_direct_click(
+    const json & grouped,
+    int32_t selected_id,
+    const std::vector<std::string> & task_terms,
+    const std::vector<std::string> & static_lines
+) {
+    const auto * item = find_grouped_item_by_id(grouped, selected_id);
+    if (item == nullptr) {
+        return false;
+    }
+
+    const auto label = grouped_item_label(*item);
+    const int score = score_clickable_item_for_terms(*item, task_terms);
+    if (score < 3) {
+        return false;
+    }
+
+    const auto screen_stats = collect_prominence_screen_stats(collect_unique_item_refs(grouped));
+    const auto snapshot = compute_prominence_snapshot(*item, screen_stats);
+    if (snapshot.search_like) {
+        return false;
+    }
+
+    if (label_matches_visible_static(label, static_lines)) {
+        return true;
+    }
+
+    return task_terms.size() == 1 && score >= 4 && snapshot.title_like;
+}
+
+bool should_auto_accept_direct_click_for_test(
+    const json & grouped,
+    int32_t selected_id,
+    const std::vector<std::string> & task_terms,
+    const std::vector<std::string> & static_lines
+) {
+    return should_auto_accept_direct_click(grouped, selected_id, task_terms, static_lines);
 }
 
 static std::vector<int32_t> collect_direct_click_match_ids(
@@ -3621,6 +4326,7 @@ static loki_action::json build_chat_request_payload_global(
     const std::string & grammar,
     const char * system_prompt,
     const std::optional<loki_action::extracted_steps_plan> & extracted_plan,
+    const std::vector<std::string> & main_text_lines,
     const std::string & screen_mode,
     const std::string & phase_goal
 ) {
@@ -3638,6 +4344,7 @@ static loki_action::json build_chat_request_payload_global(
                     screen_name,
                     toon,
                     extracted_plan,
+                    main_text_lines,
                     screen_mode,
                     phase_goal
                 )}
@@ -3663,6 +4370,7 @@ static loki_action::json build_done_gate_payload_global(
     const loki_action::prompt_context & context,
     const std::string & screen_name,
     const std::vector<std::string> & static_lines,
+    const std::vector<std::string> & main_text_lines,
     const loki_action::extracted_steps_plan & plan,
     const std::string & phase_goal,
     const std::string & screen_mode
@@ -3672,6 +4380,10 @@ static loki_action::json build_done_gate_payload_global(
     user_content += context.task;
     user_content += "\nApp: ";
     user_content += screen_name;
+    if (!main_text_lines.empty()) {
+        user_content += "\nMainTitle: ";
+        user_content += loki_action::compact_single_line(main_text_lines.front(), 96);
+    }
     if (!screen_mode.empty()) {
         user_content += "\nScreenMode: ";
         user_content += screen_mode;
@@ -3737,6 +4449,7 @@ static loki_action::json build_step_extractor_payload_global(
     const std::string & current_app_short,
     const std::string & screen_mode,
     const std::vector<std::string> & static_lines,
+    const std::vector<std::string> & main_text_lines,
     const std::vector<std::string> & top_interactive
 ) {
     return loki_action::json{
@@ -3754,6 +4467,7 @@ static loki_action::json build_step_extractor_payload_global(
                     current_app_short,
                     screen_mode,
                     static_lines,
+                    main_text_lines,
                     top_interactive
                 )}
             },
@@ -3776,6 +4490,7 @@ static std::optional<loki_action::extracted_steps_plan> run_steps_extractor_glob
     const std::string & current_app_short,
     const std::string & screen_mode,
     const std::vector<std::string> & static_lines,
+    const std::vector<std::string> & main_text_lines,
     const std::vector<std::string> & top_interactive,
     const std::string & host_copy,
     int32_t resolved_port,
@@ -3794,6 +4509,7 @@ static std::optional<loki_action::extracted_steps_plan> run_steps_extractor_glob
             current_app_short,
             screen_mode,
             static_lines,
+            main_text_lines,
             top_interactive
         );
         const auto payload_body = payload.dump();
@@ -3904,6 +4620,7 @@ extern "C" LOKI_ACTION_API loki_action_result_t * loki_action_resolve_path(
         stage = "build_toon";
         std::vector<std::string> static_lines;
         const auto full_toon = loki_action::build_runtime_toon(*root_it, grouped, &static_lines);
+        const auto main_text_lines = loki_action::build_main_text_lines(*root_it, 4);
         const auto top_interactive = loki_action::build_top_interactive_summary(grouped);
         loki_action::log_multiline_toon(full_toon, prompt_context.step_number);
         const auto bootstrap_expected_apps = loki_action::expand_expected_apps(
@@ -3916,12 +4633,28 @@ extern "C" LOKI_ACTION_API loki_action_result_t * loki_action_resolve_path(
             top_interactive
         );
         LOKI_LOGI(
-            "STEP %d SCREEN: app=%s mode=%s static=\"%s\" top=\"%s\"",
+            "STEP %d SCREEN: app=%s mode=%s main=\"%s\" static=\"%s\" top=\"%s\"",
             prompt_context.step_number,
             current_app_short.c_str(),
             loki_action::screen_mode_name(bootstrap_screen_mode),
+            loki_action::truncate_for_log(
+                loki_action::escape_for_log(
+                    main_text_lines.empty() ? std::string("none") : main_text_lines.front()
+                ),
+                140
+            ).c_str(),
             loki_action::truncate_for_log(loki_action::escape_for_log(loki_action::join_compact(static_lines, " | ", 5)), 180).c_str(),
             loki_action::truncate_for_log(loki_action::escape_for_log(loki_action::join_compact(top_interactive, " | ", 6)), 180).c_str()
+        );
+        LOKI_LOGI(
+            "STEP %d MAIN: %s",
+            prompt_context.step_number,
+            loki_action::truncate_for_log(
+                loki_action::escape_for_log(
+                    main_text_lines.empty() ? std::string("none") : loki_action::join_compact(main_text_lines, " || ", 4)
+                ),
+                220
+            ).c_str()
         );
         const auto candidate_ids = loki_action::collect_candidate_ids(grouped);
         const auto editable_candidate_ids = loki_action::collect_candidate_ids_for_attr(grouped, "editable");
@@ -3955,6 +4688,7 @@ extern "C" LOKI_ACTION_API loki_action_result_t * loki_action_resolve_path(
             current_app_short,
             loki_action::screen_mode_name(bootstrap_screen_mode),
             static_lines,
+            main_text_lines,
             top_interactive,
             host_copy,
             resolved_port,
@@ -3973,8 +4707,10 @@ extern "C" LOKI_ACTION_API loki_action_result_t * loki_action_resolve_path(
             !prefers_state_action_initial;
         const bool raw_plan_app_match = loki_action::app_matches_expected(
             screen_name,
-            loki_action::expand_expected_apps(
-                raw_extracted_plan.has_value() ? raw_extracted_plan->apps : bootstrap_expected_apps
+            loki_action::primary_expected_apps(
+                loki_action::expand_expected_apps(
+                    raw_extracted_plan.has_value() ? raw_extracted_plan->apps : bootstrap_expected_apps
+                )
             )
         );
         const auto done_plan = loki_action::normalize_plan_for_done(raw_extracted_plan, raw_plan_app_match);
@@ -4056,6 +4792,7 @@ extern "C" LOKI_ACTION_API loki_action_result_t * loki_action_resolve_path(
                 grammar,
                 system_prompt,
                 enriched_plan,
+                main_text_lines,
                 loki_action::screen_mode_name(final_screen_mode),
                 phase_gate.phase_goal
             );
@@ -4175,20 +4912,32 @@ extern "C" LOKI_ACTION_API loki_action_result_t * loki_action_resolve_path(
                 );
                 if (!done_check.accepted) {
                     LOKI_LOGI(
-                        "STEP %d DONE REJECTED: pass=%s reason=%s required_history=%zu history=%zu",
+                        "STEP %d DONE REJECTED: pass=%s reason=%s main=\"%s\" required_history=%zu history=%zu",
                         prompt_context.step_number,
                         pass_name,
                         done_check.reason.c_str(),
+                        loki_action::truncate_for_log(
+                            loki_action::escape_for_log(
+                                main_text_lines.empty() ? std::string("none") : main_text_lines.front()
+                            ),
+                            120
+                        ).c_str(),
                         required_history,
                         prompt_context.history_tokens.size()
                     );
                     return false;
                 }
                 LOKI_LOGI(
-                    "STEP %d DONE ACCEPTED: pass=%s reason=%s required_history=%zu history=%zu",
+                    "STEP %d DONE ACCEPTED: pass=%s reason=%s main=\"%s\" required_history=%zu history=%zu",
                     prompt_context.step_number,
                     pass_name,
                     done_check.reason.c_str(),
+                    loki_action::truncate_for_log(
+                        loki_action::escape_for_log(
+                            main_text_lines.empty() ? std::string("none") : main_text_lines.front()
+                        ),
+                        120
+                    ).c_str(),
                     required_history,
                     prompt_context.history_tokens.size()
                 );
@@ -4238,6 +4987,7 @@ extern "C" LOKI_ACTION_API loki_action_result_t * loki_action_resolve_path(
                     prompt_context,
                     screen_name,
                     static_lines,
+                    main_text_lines,
                     enriched_plan,
                     phase_gate.phase_goal,
                     loki_action::screen_mode_name(final_screen_mode)
@@ -4291,18 +5041,38 @@ extern "C" LOKI_ACTION_API loki_action_result_t * loki_action_resolve_path(
             }
 
             if (!has_action_response && !prefers_text_edit && !prefers_state_action && phase_has_direct_click_match) {
-                const auto direct_click_response = run_model_pass(
-                    "direct-click-priority",
-                    loki_action::DIRECT_CLICK_PRIORITY_PROMPT,
-                    phase_gate.direct_click_ids,
-                    {},
-                    0,
-                    true,
-                    phase_gate.allow_back
-                );
-                if (direct_click_response.has_value() &&
-                    (direct_click_response->done || direct_click_response->selected_id >= 0)) {
-                    (void) try_accept_model_response(*direct_click_response, "direct-click-priority");
+                if (phase_gate.direct_click_ids.size() == 1 &&
+                    loki_action::should_auto_accept_direct_click(
+                        grouped,
+                        phase_gate.direct_click_ids.front(),
+                        task_match_terms,
+                        static_lines
+                    )) {
+                    action_response.selected_id = phase_gate.direct_click_ids.front();
+                    action_response.action_type = "click";
+                    action_response.text.reset();
+                    action_response.text_index = -1;
+                    action_response.done = false;
+                    has_action_response = true;
+                    LOKI_LOGI(
+                        "STEP %d DECISION: auto_direct_click id=%d reason=unique-strong-direct",
+                        prompt_context.step_number,
+                        action_response.selected_id
+                    );
+                } else {
+                    const auto direct_click_response = run_model_pass(
+                        "direct-click-priority",
+                        loki_action::DIRECT_CLICK_PRIORITY_PROMPT,
+                        phase_gate.direct_click_ids,
+                        {},
+                        0,
+                        true,
+                        phase_gate.allow_back
+                    );
+                    if (direct_click_response.has_value() &&
+                        (direct_click_response->done || direct_click_response->selected_id >= 0)) {
+                        (void) try_accept_model_response(*direct_click_response, "direct-click-priority");
+                    }
                 }
             }
 
@@ -4317,7 +5087,6 @@ extern "C" LOKI_ACTION_API loki_action_result_t * loki_action_resolve_path(
                     false
                 );
                 if (editable_response.has_value() && editable_response->selected_id >= 0) {
-                    (void) try_accept_model_response(*editable_response, "editable-priority");
                     (void) try_accept_model_response(*editable_response, "editable-priority");
                 }
             }

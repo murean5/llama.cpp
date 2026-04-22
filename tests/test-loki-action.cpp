@@ -1,5 +1,6 @@
 #include "../tools/loki_action/loki_action_internal.h"
 
+#include <algorithm>
 #include <fstream>
 #include <iostream>
 #include <stdexcept>
@@ -73,6 +74,27 @@ int main() {
         !loki_action::prompt_requests_text_edit("open settings"),
         "plain navigation request should not be treated as text-edit intent"
     );
+
+    {
+        loki_action::extracted_steps_plan plan;
+        plan.goal = "Open contact with 'мама'";
+        plan.steps = {
+            "Open Contacts app",
+            "Open contact 'мама'"
+        };
+        const auto textCandidates =
+            loki_action::derive_text_candidates_for_test(u8"открой контакт мамы", plan);
+        assert_true(!textCandidates.empty(), "text candidates should not be empty");
+        assert_equals("мама", textCandidates.front(), "text candidates should prefer clean entity text");
+        assert_true(
+            std::find(textCandidates.begin(), textCandidates.end(), "contact 'мама'") == textCandidates.end(),
+            "instructional contact phrase should not leak into text candidates"
+        );
+        assert_true(
+            std::find(textCandidates.begin(), textCandidates.end(), "Open contact with 'мама'") == textCandidates.end(),
+            "raw goal should not leak into text candidates"
+        );
+    }
 
     const auto grammar = loki_action::build_action_response_grammar({7, 12, 23}, {12}, 2, true, false, true);
     assert_true(grammar.find("done-response") != std::string::npos, "grammar should include done branch");
@@ -314,6 +336,10 @@ int main() {
             {"roleDescription", "input"},
             {"stateDescription", "empty"},
             {"error", "Required"},
+            {"textSizePx", 24.0},
+            {"textSizeUnit", 2},
+            {"layoutHeightPx", 96},
+            {"topRegion", true},
             {"attrs", json::array({"editable", "clickable"})}
         };
         const auto synthetic_grouped = loki_action::group_by_attrs_textual(synthetic_tree);
@@ -328,7 +354,19 @@ int main() {
             "synthetic grouped should include hint"
         );
         assert_true(
-            synthetic_toon.find("id | resId | role | state | error | inputType | hint") != std::string::npos,
+            synthetic_grouped.at("editable")[0].at("textSizePx").get<double>() == 24.0,
+            "synthetic grouped should preserve textSizePx"
+        );
+        assert_true(
+            synthetic_grouped.at("editable")[0].at("layoutHeightPx").get<int32_t>() == 96,
+            "synthetic grouped should preserve layoutHeightPx"
+        );
+        assert_true(
+            synthetic_grouped.at("editable")[0].at("topRegion").get<bool>(),
+            "synthetic grouped should preserve topRegion"
+        );
+        assert_true(
+            synthetic_toon.find("id | resId | role | state | error | inputType | hint | textSizePx | textSizeUnit | layoutHeightPx | topRegion") != std::string::npos,
             "legacy TOON should use preferred metadata columns"
         );
         assert_true(
@@ -339,8 +377,8 @@ int main() {
 
         const auto runtime_toon = loki_action::build_runtime_toon_for_test(json::object(), synthetic_grouped);
         assert_true(
-            runtime_toon.find("id | label | resId | hint | meta | attrs") != std::string::npos,
-            "runtime TOON should expose richer interactive columns"
+            runtime_toon.find("1) | top,size=xl | res=message_input | hint=Type message") != std::string::npos,
+            "runtime TOON should expose compact interactive prominence markers"
         );
         assert_true(
             runtime_toon.find("message_input") != std::string::npos &&
@@ -348,29 +386,32 @@ int main() {
             "runtime TOON should include resId and hint"
         );
         assert_true(
-            runtime_toon.find("role=input;state=empty;type=textEmailAddress;error=Required") != std::string::npos,
+            runtime_toon.find("role=input;state=empty;type=textEmailAddress;error=Required") != std::string::npos &&
+            runtime_toon.find("attrs=clickable,editable") != std::string::npos,
             "runtime TOON should compact metadata into meta column"
         );
     }
 
     {
-        const json done_grouped = {
+        const json list_done_grouped = {
             {"clickable", json::array({
                 json{
                     {"id", 1},
                     {"path", json::array({0, 0})},
-                    {"text", "Alice thread"}
+                    {"text", "Contact Mama"},
+                    {"topRegion", false},
+                    {"layoutHeightPx", 48}
                 }
             })}
         };
         loki_action::prompt_context ctx;
-        ctx.task = "open thread alice";
+        ctx.task = "open contact mama";
         ctx.history_tokens = {"c", "c"};
         ctx.history_ids = {7, 8};
 
         loki_action::extracted_steps_plan plan;
-        plan.steps = {"Open messages", "Open thread Alice", "Read thread"};
-        const auto reject_done = loki_action::validate_done_response_for_test(done_grouped, ctx.task, ctx, plan);
+        plan.steps = {"Open contacts", "Open contact Mama", "View contact details"};
+        const auto reject_done = loki_action::validate_done_response_for_test(list_done_grouped, ctx.task, ctx, plan);
         assert_true(!reject_done.accepted, "done should respect plan-aware minimum history");
         assert_true(
             reject_done.reason.find("required=3") != std::string::npos,
@@ -379,16 +420,72 @@ int main() {
 
         ctx.history_tokens.push_back("c");
         ctx.history_ids.push_back(9);
-        const auto accept_done = loki_action::validate_done_response_for_test(done_grouped, ctx.task, ctx, plan);
-        assert_true(accept_done.accepted, "done should pass after plan-aware history floor");
+        const auto still_reject_done =
+            loki_action::validate_done_response_for_test(list_done_grouped, ctx.task, ctx, plan);
+        assert_true(!still_reject_done.accepted, "list item should not satisfy done without prominence");
 
         loki_action::prompt_context fallback_ctx;
-        fallback_ctx.task = "open thread alice";
+        fallback_ctx.task = "open contact mama";
         fallback_ctx.history_tokens = {"c", "c"};
         fallback_ctx.history_ids = {1, 2};
         const auto fallback_done =
-            loki_action::validate_done_response_for_test(done_grouped, fallback_ctx.task, fallback_ctx, std::nullopt);
-        assert_true(fallback_done.accepted, "done without plan should keep baseline threshold");
+            loki_action::validate_done_response_for_test(list_done_grouped, fallback_ctx.task, fallback_ctx, std::nullopt);
+        assert_true(!fallback_done.accepted, "list item should still fail baseline done check");
+    }
+
+    {
+        const json prominent_done_grouped = {
+            {"clickable", json::array({
+                json{
+                    {"id", 1},
+                    {"path", json::array({0, 0})},
+                    {"text", "Mama"},
+                    {"topRegion", true},
+                    {"textSizePx", 30.0},
+                    {"layoutHeightPx", 112}
+                },
+                json{
+                    {"id", 2},
+                    {"path", json::array({1, 0})},
+                    {"text", "Call"},
+                    {"topRegion", false},
+                    {"textSizePx", 16.0},
+                    {"layoutHeightPx", 44}
+                }
+            })}
+        };
+        loki_action::prompt_context ctx;
+        ctx.task = "open contact mama";
+        ctx.history_tokens = {"c", "c"};
+        ctx.history_ids = {7, 8};
+
+        const auto accept_done =
+            loki_action::validate_done_response_for_test(prominent_done_grouped, ctx.task, ctx, std::nullopt);
+        assert_true(accept_done.accepted, "prominent top title should satisfy done");
+    }
+
+    {
+        const json direct_grouped = {
+            {"clickable", json::array({
+                json{
+                    {"id", 8},
+                    {"path", json::array({0, 1})},
+                    {"text", "Мама"},
+                    {"topRegion", true},
+                    {"textSizePx", 28.0},
+                    {"layoutHeightPx", 100}
+                }
+            })}
+        };
+        assert_true(
+            loki_action::should_auto_accept_direct_click_for_test(
+                direct_grouped,
+                8,
+                {"мама"},
+                {"Мама | title,top,size=xl"}
+            ),
+            "auto direct click should accept strong visible target present in static context"
+        );
     }
 
     return 0;
