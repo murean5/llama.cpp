@@ -275,7 +275,6 @@ int main() {
     }
     assert_true(did_throw, "malformed compact response should throw");
 
-    // parse_prompt_context: single action -- counts itself as 1
     {
         const auto ctx = loki_action::parse_prompt_context(
             "Task: find contact\nHistory (old->new): 1. click id=5 label='Contacts' app=contacts"
@@ -287,7 +286,6 @@ int main() {
         assert_equals("find contact", ctx.task, "task should be extracted");
     }
 
-    // parse_prompt_context: two identical actions -- indicates stuck (repeated_tail >= 2)
     {
         const auto ctx = loki_action::parse_prompt_context(
             "Task: find contact\nHistory (old->new): "
@@ -298,7 +296,6 @@ int main() {
         assert_true(ctx.repeated_tail_same_signature == 2, "repeated same_sig should be 2");
     }
 
-    // parse_prompt_context: three different clicks -- not stuck by id
     {
         const auto ctx = loki_action::parse_prompt_context(
             "Task: navigate\nHistory (old->new): "
@@ -310,7 +307,6 @@ int main() {
         assert_true(ctx.repeated_tail_clicks == 3, "three clicks counted correctly");
     }
 
-    // parse_steps_extractor_content: valid content
     {
         const auto plan = loki_action::parse_steps_extractor_content(
             R"({"goal":"Open contacts and find Mom","apps":["contacts"],"steps":["click Contacts","set_text Mom"],"phase_hints":["Open contacts","Type Mom"]})"
@@ -322,7 +318,6 @@ int main() {
         assert_true(plan->phase_hints.size() == 2, "plan should parse phase_hints");
     }
 
-    // parse_steps_extractor_content: invalid/empty content returns nullopt
     assert_true(!loki_action::parse_steps_extractor_content("").has_value(), "empty returns nullopt");
     assert_true(!loki_action::parse_steps_extractor_content("{}").has_value(), "empty obj returns nullopt");
     assert_true(!loki_action::parse_steps_extractor_content("not json").has_value(), "invalid json returns nullopt");

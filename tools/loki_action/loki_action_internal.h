@@ -87,6 +87,6 @@ done_validation_result validate_done_response_for_test(
     const std::optional<extracted_steps_plan> & plan
 );
 
-} // namespace loki_action
+}
 
 #endif

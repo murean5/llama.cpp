@@ -1874,7 +1874,7 @@ const char * duplicate_c_string(const std::string & value) {
     return buffer;
 }
 
-} // namespace
+}
 
 prompt_context parse_prompt_context(const std::string & raw_prompt) {
     prompt_context context;
@@ -4269,7 +4269,7 @@ void validate_action_response_for_grouped(const json & grouped, const model_acti
     }
 }
 
-} // namespace loki_action
+}
 
 namespace {
 
@@ -4282,7 +4282,7 @@ const char * duplicate_c_string_global(const std::string & value) {
     return buffer;
 }
 
-} // namespace loki_action
+}
 
 static loki_action_result_t * make_result_global(
     loki_action_status_t status,
