@@ -212,6 +212,90 @@ std::optional<std::string> normalized_field(const json & node, const char * key)
     return json_value_to_string(*it);
 }
 
+static context_flags default_context_flags() {
+    return context_flags{};
+}
+
+static int sanitize_max_depth(int raw_value) {
+    switch (raw_value) {
+        case 5:
+        case 10:
+        case 15:
+            return raw_value;
+        default:
+            return 15;
+    }
+}
+
+static context_flags sanitize_context_flags(const context_flags & raw_flags) {
+    context_flags flags = raw_flags;
+    flags.max_depth = sanitize_max_depth(flags.max_depth);
+    return flags;
+}
+
+static bool has_actionable_attrs(const json & node) {
+    const auto attrs_it = node.find("attrs");
+    return attrs_it != node.end() && attrs_it->is_array() && !attrs_it->empty();
+}
+
+static context_flags parse_context_flags_json_impl(
+    const std::string & raw_json,
+    bool log_errors,
+    bool * used_defaults_out = nullptr
+) {
+    if (used_defaults_out != nullptr) {
+        *used_defaults_out = false;
+    }
+
+    context_flags flags = default_context_flags();
+    const auto trimmed = trim_copy(raw_json);
+    if (trimmed.empty()) {
+        if (used_defaults_out != nullptr) {
+            *used_defaults_out = true;
+        }
+        return flags;
+    }
+
+    try {
+        const auto parsed = json::parse(trimmed);
+        if (!parsed.is_object()) {
+            if (log_errors) {
+                LOKI_LOGE("FLAGS parse failed: root is not an object, using defaults");
+            }
+            if (used_defaults_out != nullptr) {
+                *used_defaults_out = true;
+            }
+            return flags;
+        }
+
+        const auto apply_bool = [&](const char * key, bool & target) {
+            const auto it = parsed.find(key);
+            if (it != parsed.end() && it->is_boolean()) {
+                target = it->get<bool>();
+            }
+        };
+        const auto max_depth_it = parsed.find("maxDepth");
+        if (max_depth_it != parsed.end() && max_depth_it->is_number_integer()) {
+            flags.max_depth = sanitize_max_depth(max_depth_it->get<int>());
+        }
+
+        apply_bool("hideNonClickableText", flags.hide_non_clickable_text);
+        apply_bool("dropTextSize", flags.drop_text_size);
+        apply_bool("dropRoleAndState", flags.drop_role_and_state);
+        apply_bool("dropTopRegion", flags.drop_top_region);
+        apply_bool("dropInputType", flags.drop_input_type);
+        return sanitize_context_flags(flags);
+    } catch (const std::exception & e) {
+        if (log_errors) {
+            LOKI_LOGE("FLAGS parse failed: %s, using defaults", e.what());
+        }
+        if (used_defaults_out != nullptr) {
+            *used_defaults_out = true;
+        }
+        return default_context_flags();
+    }
+}
+
 static const std::unordered_set<std::string> GENERIC_RESOURCE_IDS = {
     "root", "content", "main", "container", "layout", "frame",
     "view", "item", "list", "scroll", "text", "image", "icon"
@@ -241,12 +325,12 @@ static std::string shorten_resource_id(const std::string & raw_id) {
     return short_id;
 }
 
-json build_text_fields(const json & node) {
+json build_text_fields(const json & node, const context_flags & flags) {
     json result = json::object();
 
     const auto text = normalized_field(node, "text");
     const auto content_desc = normalized_field(node, "contentDesc");
-    const auto hint = normalized_field(node, "hintText");
+    const auto hint = flags.drop_role_and_state ? std::nullopt : normalized_field(node, "hintText");
 
     if (!text && !content_desc && !hint) {
         return result;
@@ -272,37 +356,43 @@ json build_text_fields(const json & node) {
         result["hint"] = *hint;
     }
 
-    const auto text_size_it = node.find("textSizePx");
-    if (text_size_it != node.end() && text_size_it->is_number()) {
-        result["textSizePx"] = text_size_it->get<double>();
+    if (!flags.drop_text_size) {
+        const auto text_size_it = node.find("textSizePx");
+        if (text_size_it != node.end() && text_size_it->is_number()) {
+            result["textSizePx"] = text_size_it->get<double>();
+        }
+
+        const auto text_size_unit_it = node.find("textSizeUnit");
+        if (text_size_unit_it != node.end() && text_size_unit_it->is_number_integer()) {
+            result["textSizeUnit"] = text_size_unit_it->get<int32_t>();
+        }
+
+        const auto layout_height_it = node.find("layoutHeightPx");
+        if (layout_height_it != node.end() && layout_height_it->is_number_integer()) {
+            result["layoutHeightPx"] = layout_height_it->get<int32_t>();
+        }
     }
 
-    const auto text_size_unit_it = node.find("textSizeUnit");
-    if (text_size_unit_it != node.end() && text_size_unit_it->is_number_integer()) {
-        result["textSizeUnit"] = text_size_unit_it->get<int32_t>();
-    }
-
-    const auto layout_height_it = node.find("layoutHeightPx");
-    if (layout_height_it != node.end() && layout_height_it->is_number_integer()) {
-        result["layoutHeightPx"] = layout_height_it->get<int32_t>();
-    }
-
-    const auto top_region_it = node.find("topRegion");
-    if (top_region_it != node.end() && top_region_it->is_boolean()) {
-        result["topRegion"] = top_region_it->get<bool>();
+    if (!flags.drop_top_region) {
+        const auto top_region_it = node.find("topRegion");
+        if (top_region_it != node.end() && top_region_it->is_boolean()) {
+            result["topRegion"] = top_region_it->get<bool>();
+        }
     }
 
     return result;
 }
 
-json find_text_fields_in_subtree(const json & node) {
-    if (!node.is_object()) {
+json find_text_fields_in_subtree(const json & node, const context_flags & flags, int depth) {
+    if (!node.is_object() || depth > flags.max_depth) {
         return json::object();
     }
 
-    json current = build_text_fields(node);
-    if (!current.empty()) {
-        return current;
+    if (!flags.hide_non_clickable_text || has_actionable_attrs(node)) {
+        json current = build_text_fields(node, flags);
+        if (!current.empty()) {
+            return current;
+        }
     }
 
     const auto it = node.find("children");
@@ -314,7 +404,7 @@ json find_text_fields_in_subtree(const json & node) {
         if (!child.is_object()) {
             continue;
         }
-        json nested = find_text_fields_in_subtree(child);
+        json nested = find_text_fields_in_subtree(child, flags, depth + 1);
         if (!nested.empty()) {
             return nested;
         }
@@ -330,8 +420,15 @@ std::string attr_to_string(const json & value) {
     return value.dump();
 }
 
-void walk_tree(const json & node, std::vector<int> & path, json & grouped, int32_t & next_id) {
-    if (!node.is_object()) {
+void walk_tree(
+    const json & node,
+    std::vector<int> & path,
+    json & grouped,
+    int32_t & next_id,
+    const context_flags & flags,
+    int depth
+) {
+    if (!node.is_object() || depth > flags.max_depth) {
         return;
     }
 
@@ -341,12 +438,18 @@ void walk_tree(const json & node, std::vector<int> & path, json & grouped, int32
         attrs = *attrs_it;
     }
 
-    json text_fields = build_text_fields(node);
+    const auto baseline_flags = default_context_flags();
+    json text_fields = build_text_fields(node, flags);
     if (!attrs.empty() && text_fields.empty()) {
-        text_fields = find_text_fields_in_subtree(node);
+        text_fields = find_text_fields_in_subtree(node, flags, depth);
     }
 
-    if (!attrs.empty() && !text_fields.empty()) {
+    json baseline_text_fields = build_text_fields(node, baseline_flags);
+    if (!attrs.empty() && baseline_text_fields.empty()) {
+        baseline_text_fields = find_text_fields_in_subtree(node, baseline_flags, depth);
+    }
+
+    if (!attrs.empty() && (!text_fields.empty() || !baseline_text_fields.empty())) {
         const int32_t item_id = next_id++;
         json item = json::object();
         item["id"] = item_id;
@@ -361,14 +464,18 @@ void walk_tree(const json & node, std::vector<int> & path, json & grouped, int32
                 item["resId"] = short_id;
             }
         }
-        if (const auto input_type = normalized_field(node, "inputType")) {
-            item["inputType"] = *input_type;
+        if (!flags.drop_input_type) {
+            if (const auto input_type = normalized_field(node, "inputType")) {
+                item["inputType"] = *input_type;
+            }
         }
-        if (const auto role = normalized_field(node, "roleDescription")) {
-            item["role"] = *role;
-        }
-        if (const auto state = normalized_field(node, "stateDescription")) {
-            item["state"] = *state;
+        if (!flags.drop_role_and_state) {
+            if (const auto role = normalized_field(node, "roleDescription")) {
+                item["role"] = *role;
+            }
+            if (const auto state = normalized_field(node, "stateDescription")) {
+                item["state"] = *state;
+            }
         }
         if (const auto error = normalized_field(node, "error")) {
             item["error"] = *error;
@@ -401,7 +508,7 @@ void walk_tree(const json & node, std::vector<int> & path, json & grouped, int32
             continue;
         }
         path.push_back(static_cast<int>(index));
-        walk_tree(child, path, grouped, next_id);
+        walk_tree(child, path, grouped, next_id, flags, depth + 1);
         path.pop_back();
     }
 }
@@ -2297,7 +2404,10 @@ static bool looks_like_launcher_name(const std::string & app_short) {
         lowered.find("pixel") != std::string::npos;
 }
 
-static std::vector<std::string> build_top_interactive_summary(const json & grouped, size_t max_items = 8) {
+static std::vector<std::string> build_top_interactive_summary(
+    const json & grouped,
+    size_t max_items = 8
+) {
     std::vector<std::string> out;
     const auto item_refs = collect_unique_item_refs(grouped);
     for (const auto * item_ptr : item_refs) {
@@ -2806,8 +2916,14 @@ static bool looks_like_search_or_chrome_label(const std::string & label) {
         lowered.find("tab") != std::string::npos;
 }
 
-static prominence_screen_stats collect_prominence_screen_stats(const std::vector<const json *> & items) {
+static prominence_screen_stats collect_prominence_screen_stats(
+    const std::vector<const json *> & items,
+    const context_flags & flags
+) {
     prominence_screen_stats stats;
+    if (flags.drop_text_size) {
+        return stats;
+    }
     for (const auto * item_ptr : items) {
         if (item_ptr == nullptr || !item_ptr->is_object()) {
             continue;
@@ -2828,18 +2944,21 @@ static prominence_screen_stats collect_prominence_screen_stats(const std::vector
 
 static prominence_snapshot compute_prominence_snapshot(
     const json & item,
-    const prominence_screen_stats & stats
+    const prominence_screen_stats & stats,
+    const context_flags & flags
 ) {
     prominence_snapshot snapshot;
     snapshot.heading = item_has_attr(item, "heading");
-    snapshot.top_region = json_bool_field(item, "topRegion").value_or(false);
+    snapshot.top_region = flags.drop_top_region ? false : json_bool_field(item, "topRegion").value_or(false);
 
-    if (const auto text_size = json_number_field(item, "textSizePx")) {
-        snapshot.has_text_size = *text_size > 0.0;
-        snapshot.text_size_px = *text_size;
-    }
-    if (const auto layout_height = json_int_field(item, "layoutHeightPx")) {
-        snapshot.layout_height_px = *layout_height;
+    if (!flags.drop_text_size) {
+        if (const auto text_size = json_number_field(item, "textSizePx")) {
+            snapshot.has_text_size = *text_size > 0.0;
+            snapshot.text_size_px = *text_size;
+        }
+        if (const auto layout_height = json_int_field(item, "layoutHeightPx")) {
+            snapshot.layout_height_px = *layout_height;
+        }
     }
 
     const auto label = build_item_label_for_prompt(item);
@@ -2899,16 +3018,20 @@ static std::string build_prominence_marker_string(const prominence_snapshot & sn
     return join_compact(markers, ",", 4);
 }
 
-static std::string build_item_metadata_for_prompt(const json & item) {
+static std::string build_item_metadata_for_prompt(const json & item, const context_flags & flags) {
     std::vector<std::string> parts;
-    if (const auto role = normalized_field(item, "role")) {
-        parts.push_back("role=" + normalize_compact_label(*role, 32));
+    if (!flags.drop_role_and_state) {
+        if (const auto role = normalized_field(item, "role")) {
+            parts.push_back("role=" + normalize_compact_label(*role, 32));
+        }
+        if (const auto state = normalized_field(item, "state")) {
+            parts.push_back("state=" + normalize_compact_label(*state, 32));
+        }
     }
-    if (const auto state = normalized_field(item, "state")) {
-        parts.push_back("state=" + normalize_compact_label(*state, 32));
-    }
-    if (const auto input_type = normalized_field(item, "inputType")) {
-        parts.push_back("type=" + normalize_compact_label(*input_type, 24));
+    if (!flags.drop_input_type) {
+        if (const auto input_type = normalized_field(item, "inputType")) {
+            parts.push_back("type=" + normalize_compact_label(*input_type, 24));
+        }
     }
     if (const auto error = normalized_field(item, "error")) {
         parts.push_back("error=" + normalize_compact_label(*error, 32));
@@ -2916,13 +3039,18 @@ static std::string build_item_metadata_for_prompt(const json & item) {
     return join_compact(parts, ";", 4);
 }
 
-static void collect_visible_static_node_refs_recursive(const json & node, std::vector<const json *> & out) {
-    if (!node.is_object()) {
+static void collect_visible_static_node_refs_recursive(
+    const json & node,
+    std::vector<const json *> & out,
+    const context_flags & flags,
+    int depth
+) {
+    if (!node.is_object() || depth > flags.max_depth) {
         return;
     }
 
     const bool actionable = node.contains("attrs") && node.at("attrs").is_array() && !node.at("attrs").empty();
-    if (!actionable) {
+    if (!flags.hide_non_clickable_text && !actionable) {
         const auto label = build_item_label_for_prompt(node);
         if (!label.empty()) {
             out.push_back(&node);
@@ -2934,7 +3062,7 @@ static void collect_visible_static_node_refs_recursive(const json & node, std::v
         return;
     }
     for (const auto & child : *children_it) {
-        collect_visible_static_node_refs_recursive(child, out);
+        collect_visible_static_node_refs_recursive(child, out, flags, depth + 1);
     }
 }
 
@@ -2989,11 +3117,17 @@ static bool label_is_meaningful_main_text(const std::string & raw_label) {
     return has_meaningful_char;
 }
 
-static void collect_all_labeled_node_refs_recursive(const json & node, std::vector<const json *> & out) {
-    if (!node.is_object()) {
+static void collect_all_labeled_node_refs_recursive(
+    const json & node,
+    std::vector<const json *> & out,
+    const context_flags & flags,
+    int depth
+) {
+    if (!node.is_object() || depth > flags.max_depth) {
         return;
     }
-    if (!build_item_label_for_prompt(node).empty()) {
+    const bool actionable = has_actionable_attrs(node);
+    if ((!flags.hide_non_clickable_text || actionable) && !build_item_label_for_prompt(node).empty()) {
         out.push_back(&node);
     }
     const auto children_it = node.find("children");
@@ -3001,7 +3135,7 @@ static void collect_all_labeled_node_refs_recursive(const json & node, std::vect
         return;
     }
     for (const auto & child : *children_it) {
-        collect_all_labeled_node_refs_recursive(child, out);
+        collect_all_labeled_node_refs_recursive(child, out, flags, depth + 1);
     }
 }
 
@@ -3040,10 +3174,14 @@ static int score_main_text_candidate(
     return score;
 }
 
-static std::vector<std::string> build_main_text_lines(const json & root, size_t max_items) {
+static std::vector<std::string> build_main_text_lines(
+    const json & root,
+    size_t max_items,
+    const context_flags & flags
+) {
     std::vector<const json *> refs;
-    collect_all_labeled_node_refs_recursive(root, refs);
-    const auto stats = collect_prominence_screen_stats(refs);
+    collect_all_labeled_node_refs_recursive(root, refs, flags, 0);
+    const auto stats = collect_prominence_screen_stats(refs, flags);
 
     std::unordered_map<std::string, main_text_candidate> best_by_label;
     size_t order = 0;
@@ -3054,7 +3192,7 @@ static std::vector<std::string> build_main_text_lines(const json & root, size_t 
             continue;
         }
 
-        const auto snapshot = compute_prominence_snapshot(*node_ptr, stats);
+        const auto snapshot = compute_prominence_snapshot(*node_ptr, stats, flags);
         const int score = score_main_text_candidate(*node_ptr, snapshot, label);
         if (score < 80) {
             ++order;
@@ -3071,11 +3209,11 @@ static std::vector<std::string> build_main_text_lines(const json & root, size_t 
         if (!snapshot.size_bucket.empty()) {
             markers.push_back("size=" + snapshot.size_bucket);
         }
-        if (snapshot.has_text_size) {
+        if (!flags.drop_text_size && snapshot.has_text_size) {
             char buffer[32];
             std::snprintf(buffer, sizeof(buffer), "%.1fpx", snapshot.text_size_px);
             markers.push_back(buffer);
-        } else if (snapshot.layout_height_px > 0) {
+        } else if (!flags.drop_text_size && snapshot.layout_height_px > 0) {
             markers.push_back("h=" + std::to_string(snapshot.layout_height_px));
         }
         const auto lowered = to_lower_basic_multilang(trim_copy(label));
@@ -3118,10 +3256,14 @@ static std::vector<std::string> build_main_text_lines(const json & root, size_t 
     return lines;
 }
 
-static std::vector<std::string> build_visible_static_lines(const json & root, size_t max_items) {
+static std::vector<std::string> build_visible_static_lines(
+    const json & root,
+    size_t max_items,
+    const context_flags & flags
+) {
     std::vector<const json *> refs;
-    collect_visible_static_node_refs_recursive(root, refs);
-    const auto stats = collect_prominence_screen_stats(refs);
+    collect_visible_static_node_refs_recursive(root, refs, flags, 0);
+    const auto stats = collect_prominence_screen_stats(refs, flags);
 
     std::unordered_map<std::string, runtime_static_line_candidate> best_by_label;
     size_t order = 0;
@@ -3131,7 +3273,7 @@ static std::vector<std::string> build_visible_static_lines(const json & root, si
             continue;
         }
 
-        const auto snapshot = compute_prominence_snapshot(*node_ptr, stats);
+        const auto snapshot = compute_prominence_snapshot(*node_ptr, stats, flags);
         const auto markers = build_prominence_marker_string(snapshot);
         const std::string rendered = markers.empty() ? label : label + " | " + markers;
         const auto lowered = to_lower_basic_multilang(label);
@@ -3183,11 +3325,11 @@ static std::vector<std::string> build_visible_static_lines(const json & root, si
     return lines;
 }
 
-static std::string build_interactive_toon(const json & grouped) {
+static std::string build_interactive_toon(const json & grouped, const context_flags & flags) {
     std::string out = "interactive:\n";
 
     const auto item_refs = collect_unique_item_refs(grouped);
-    const auto screen_stats = collect_prominence_screen_stats(item_refs);
+    const auto screen_stats = collect_prominence_screen_stats(item_refs, flags);
     std::vector<const json *> sorted = item_refs;
     std::sort(sorted.begin(), sorted.end(), [](const json * lhs, const json * rhs) {
         const auto lhs_id = lhs->at("id").get<int32_t>();
@@ -3221,7 +3363,7 @@ static std::string build_interactive_toon(const json & grouped) {
         if (!label.empty()) {
             parts.push_back(label);
         }
-        const auto prominence = compute_prominence_snapshot(item, screen_stats);
+        const auto prominence = compute_prominence_snapshot(item, screen_stats, flags);
         const auto prominence_markers = build_prominence_marker_string(prominence);
         if (!prominence_markers.empty()) {
             parts.push_back(prominence_markers);
@@ -3229,13 +3371,13 @@ static std::string build_interactive_toon(const json & grouped) {
         if (const auto res_id = normalized_field(item, "resId")) {
             parts.push_back("res=" + *res_id);
         }
-        if (item.find("text") == item.end()) {
+        if (!flags.drop_role_and_state && item.find("text") == item.end()) {
             if (const auto hint = normalized_field(item, "hint")) {
                 parts.push_back("hint=" + normalize_compact_label(*hint, 48));
             }
         }
 
-        const auto meta = build_item_metadata_for_prompt(item);
+        const auto meta = build_item_metadata_for_prompt(item, flags);
         if (!meta.empty()) {
             parts.push_back(meta);
         }
@@ -3253,9 +3395,10 @@ static std::string build_interactive_toon(const json & grouped) {
 static std::string build_runtime_toon(
     const json & root,
     const json & grouped,
-    std::vector<std::string> * static_lines_out = nullptr
+    std::vector<std::string> * static_lines_out,
+    const context_flags & flags
 ) {
-    std::vector<std::string> static_lines = build_visible_static_lines(root, 10);
+    std::vector<std::string> static_lines = build_visible_static_lines(root, 10, flags);
     if (static_lines_out != nullptr) {
         *static_lines_out = static_lines;
     }
@@ -3270,20 +3413,28 @@ static std::string build_runtime_toon(
             out += "\n";
         }
     }
-    out += build_interactive_toon(grouped);
+    out += build_interactive_toon(grouped, flags);
     return out;
 }
 
-std::string build_runtime_toon_for_test(const json & root, const json & grouped) {
-    return build_runtime_toon(root, grouped, nullptr);
+std::string build_runtime_toon_for_test(const json & root, const json & grouped, const context_flags & flags) {
+    return build_runtime_toon(root, grouped, nullptr, sanitize_context_flags(flags));
 }
 
-json group_by_attrs_textual(const json & tree) {
+json group_by_attrs_textual_with_flags(const json & tree, const context_flags & flags) {
     json grouped = json::object();
     int32_t next_id = 1;
     std::vector<int> path;
-    walk_tree(tree, path, grouped, next_id);
+    walk_tree(tree, path, grouped, next_id, sanitize_context_flags(flags), 0);
     return grouped;
+}
+
+json group_by_attrs_textual(const json & tree) {
+    return group_by_attrs_textual_with_flags(tree, default_context_flags());
+}
+
+context_flags parse_context_flags_json_for_test(const std::string & raw_json) {
+    return parse_context_flags_json_impl(raw_json, false, nullptr);
 }
 
 json filter_grouped_by_ids(const json & grouped, const std::vector<int32_t> & ids) {
@@ -3730,9 +3881,10 @@ static bool item_is_upper_region(const json & item) {
 
 static bool item_has_strong_done_title_signal(
     const json & item,
-    const prominence_screen_stats & screen_stats
+    const prominence_screen_stats & screen_stats,
+    const context_flags & flags
 ) {
-    const auto snapshot = compute_prominence_snapshot(item, screen_stats);
+    const auto snapshot = compute_prominence_snapshot(item, screen_stats, flags);
     if (snapshot.search_like || !snapshot.top_region) {
         return false;
     }
@@ -3853,7 +4005,8 @@ static done_validation_result validate_done_response(
     const json & grouped,
     const std::string & task,
     const prompt_context & context,
-    const std::optional<extracted_steps_plan> & plan
+    const std::optional<extracted_steps_plan> & plan,
+    const context_flags & flags
 ) {
     done_validation_result result;
     const size_t min_history = required_done_history(plan);
@@ -3932,7 +4085,7 @@ static done_validation_result validate_done_response(
     }
 
     const auto item_refs = collect_unique_item_refs(grouped);
-    const auto screen_stats = collect_prominence_screen_stats(item_refs);
+    const auto screen_stats = collect_prominence_screen_stats(item_refs, flags);
     for (const json * item_ptr : item_refs) {
         const auto stats = score_item_for_terms(*item_ptr, task_terms);
         if (stats.matched_terms == 0 || stats.longest_term < 4) {
@@ -3957,7 +4110,7 @@ static done_validation_result validate_done_response(
             continue;
         }
 
-        const bool strong_title_signal = item_has_strong_done_title_signal(*item_ptr, screen_stats);
+        const bool strong_title_signal = item_has_strong_done_title_signal(*item_ptr, screen_stats, flags);
         if ((strong_title_signal && stats.score >= 4) || (!strong_title_signal && stats.score >= 7)) {
             result.accepted = true;
             result.reason = "strong prominent target match (required=" + std::to_string(min_history) + ")";
@@ -3973,9 +4126,10 @@ done_validation_result validate_done_response_for_test(
     const json & grouped,
     const std::string & task,
     const prompt_context & context,
-    const std::optional<extracted_steps_plan> & plan
+    const std::optional<extracted_steps_plan> & plan,
+    const context_flags & flags
 ) {
-    return validate_done_response(grouped, task, context, plan);
+    return validate_done_response(grouped, task, context, plan, sanitize_context_flags(flags));
 }
 
 static int score_clickable_item_for_terms(
@@ -4051,8 +4205,9 @@ static bool should_auto_accept_direct_click(
         return false;
     }
 
-    const auto screen_stats = collect_prominence_screen_stats(collect_unique_item_refs(grouped));
-    const auto snapshot = compute_prominence_snapshot(*item, screen_stats);
+    const auto default_flags = default_context_flags();
+    const auto screen_stats = collect_prominence_screen_stats(collect_unique_item_refs(grouped), default_flags);
+    const auto snapshot = compute_prominence_snapshot(*item, screen_stats, default_flags);
     if (snapshot.search_like) {
         return false;
     }
@@ -4562,12 +4717,18 @@ static std::optional<loki_action::extracted_steps_plan> run_steps_extractor_glob
     }
 }
 
-extern "C" LOKI_ACTION_API loki_action_result_t * loki_action_resolve_path(
+static loki_action_result_t * resolve_path_impl(
     const char * user_prompt,
     const char * screen_json,
     const char * host,
-    int32_t port
+    int32_t port,
+    const loki_action::context_flags & flags,
+    const char * source_name,
+    size_t flags_len
 ) {
+    (void) source_name;
+    (void) flags_len;
+
     if (user_prompt == nullptr || screen_json == nullptr) {
         return make_result_global(
             LOKI_ACTION_STATUS_INVALID_INPUT,
@@ -4584,9 +4745,22 @@ extern "C" LOKI_ACTION_API loki_action_result_t * loki_action_resolve_path(
         stage = "copy_inputs";
         const std::string user_prompt_copy(user_prompt);
         const auto prompt_context = loki_action::parse_prompt_context(user_prompt_copy);
+        const auto resolved_flags = loki_action::sanitize_context_flags(flags);
         const std::string screen_json_copy(screen_json);
         const std::string host_copy = host != nullptr ? std::string(host) : std::string("127.0.0.1");
         const int32_t resolved_port = port > 0 ? port : 8080;
+        LOKI_LOGI(
+            "STEP %d FLAGS: source=%s flags_len=%zu hideText=%s dropSize=%s dropRoleState=%s dropTop=%s dropInput=%s maxDepth=%d",
+            prompt_context.step_number,
+            source_name != nullptr ? source_name : "unknown",
+            flags_len,
+            resolved_flags.hide_non_clickable_text ? "true" : "false",
+            resolved_flags.drop_text_size ? "true" : "false",
+            resolved_flags.drop_role_and_state ? "true" : "false",
+            resolved_flags.drop_top_region ? "true" : "false",
+            resolved_flags.drop_input_type ? "true" : "false",
+            resolved_flags.max_depth
+        );
 
         stage = "parse_screen_json";
         const auto screen = loki_action::json::parse(screen_json_copy);
@@ -4607,7 +4781,7 @@ extern "C" LOKI_ACTION_API loki_action_result_t * loki_action_resolve_path(
         const std::string current_app_short = loki_action::shorten_app_name(screen_name);
 
         stage = "group_candidates";
-        const auto grouped = loki_action::group_by_attrs_textual(*root_it);
+        const auto grouped = loki_action::group_by_attrs_textual_with_flags(*root_it, resolved_flags);
         if (grouped.empty()) {
             return make_result_global(
                 LOKI_ACTION_STATUS_NO_CANDIDATES,
@@ -4619,8 +4793,8 @@ extern "C" LOKI_ACTION_API loki_action_result_t * loki_action_resolve_path(
 
         stage = "build_toon";
         std::vector<std::string> static_lines;
-        const auto full_toon = loki_action::build_runtime_toon(*root_it, grouped, &static_lines);
-        const auto main_text_lines = loki_action::build_main_text_lines(*root_it, 4);
+        const auto full_toon = loki_action::build_runtime_toon(*root_it, grouped, &static_lines, resolved_flags);
+        const auto main_text_lines = loki_action::build_main_text_lines(*root_it, 4, resolved_flags);
         const auto top_interactive = loki_action::build_top_interactive_summary(grouped);
         loki_action::log_multiline_toon(full_toon, prompt_context.step_number);
         const auto bootstrap_expected_apps = loki_action::expand_expected_apps(
@@ -4908,7 +5082,7 @@ extern "C" LOKI_ACTION_API loki_action_result_t * loki_action_resolve_path(
                 const size_t required_history = loki_action::required_done_history(done_plan);
                 (void) required_history;
                 const auto done_check = loki_action::validate_done_response(
-                    grouped, prompt_context.task, prompt_context, done_plan
+                    grouped, prompt_context.task, prompt_context, done_plan, resolved_flags
                 );
                 if (!done_check.accepted) {
                     LOKI_LOGI(
@@ -5301,6 +5475,43 @@ extern "C" LOKI_ACTION_API loki_action_result_t * loki_action_resolve_path(
             detailed_error
         );
     }
+}
+
+extern "C" LOKI_ACTION_API loki_action_result_t * loki_action_resolve_path(
+    const char * user_prompt,
+    const char * screen_json,
+    const char * host,
+    int32_t port
+) {
+    return resolve_path_impl(
+        user_prompt,
+        screen_json,
+        host,
+        port,
+        loki_action::context_flags{},
+        "legacy",
+        0
+    );
+}
+
+extern "C" LOKI_ACTION_API loki_action_result_t * loki_action_resolve_path_with_flags(
+    const char * user_prompt,
+    const char * screen_json,
+    const char * host,
+    int32_t port,
+    const char * context_flags_json
+) {
+    const std::string raw_flags = context_flags_json != nullptr ? std::string(context_flags_json) : std::string();
+    const auto flags = loki_action::parse_context_flags_json_impl(raw_flags, true, nullptr);
+    return resolve_path_impl(
+        user_prompt,
+        screen_json,
+        host,
+        port,
+        flags,
+        "with_flags",
+        raw_flags.size()
+    );
 }
 
 extern "C" LOKI_ACTION_API void loki_action_result_destroy(loki_action_result_t * result) {

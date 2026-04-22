@@ -388,6 +388,169 @@ int main() {
     }
 
     {
+        const auto flags = loki_action::parse_context_flags_json_for_test(
+            R"({"hideNonClickableText":true,"dropTextSize":true,"dropRoleAndState":true,"dropTopRegion":true,"dropInputType":true,"maxDepth":10})"
+        );
+        assert_true(flags.hide_non_clickable_text, "flags parser should read hideNonClickableText");
+        assert_true(flags.drop_text_size, "flags parser should read dropTextSize");
+        assert_true(flags.drop_role_and_state, "flags parser should read dropRoleAndState");
+        assert_true(flags.drop_top_region, "flags parser should read dropTopRegion");
+        assert_true(flags.drop_input_type, "flags parser should read dropInputType");
+        assert_true(flags.max_depth == 10, "flags parser should clamp valid maxDepth");
+
+        const auto fallback_flags = loki_action::parse_context_flags_json_for_test("not json");
+        assert_true(!fallback_flags.hide_non_clickable_text, "malformed flags should fall back to defaults");
+        assert_true(fallback_flags.max_depth == 15, "malformed flags should use default maxDepth");
+
+        const auto bad_depth_flags = loki_action::parse_context_flags_json_for_test(R"({"maxDepth":42})");
+        assert_true(bad_depth_flags.max_depth == 15, "invalid maxDepth should fall back to 15");
+    }
+
+    {
+        json deep_tree = json{
+            {"class", "Root"},
+            {"children", json::array({
+                json{
+                    {"class", "L1"},
+                    {"children", json::array({
+                        json{
+                            {"class", "L2"},
+                            {"children", json::array({
+                                json{
+                                    {"class", "L3"},
+                                    {"children", json::array({
+                                        json{
+                                            {"class", "L4"},
+                                            {"children", json::array({
+                                                json{
+                                                    {"class", "L5"},
+                                                    {"children", json::array({
+                                                        json{
+                                                            {"class", "TextView"},
+                                                            {"text", "Deep target"},
+                                                            {"attrs", json::array({"clickable"})}
+                                                        }
+                                                    })}
+                                                }
+                                            })}
+                                        }
+                                    })}
+                                }
+                            })}
+                        }
+                    })}
+                }
+            })}
+        };
+        loki_action::context_flags shallow_flags;
+        shallow_flags.max_depth = 5;
+        const auto shallow_grouped = loki_action::group_by_attrs_textual_with_flags(deep_tree, shallow_flags);
+        assert_true(shallow_grouped.empty(), "maxDepth=5 should hide deep interactive nodes");
+
+        loki_action::context_flags deep_flags;
+        deep_flags.max_depth = 15;
+        const auto deep_grouped = loki_action::group_by_attrs_textual_with_flags(deep_tree, deep_flags);
+        assert_true(!deep_grouped.empty(), "maxDepth=15 should keep deep interactive nodes");
+    }
+
+    {
+        const json ablation_root = {
+            {"class", "FrameLayout"},
+            {"children", json::array({
+                json{
+                    {"class", "TextView"},
+                    {"text", "Visible title"}
+                },
+                json{
+                    {"class", "LinearLayout"},
+                    {"attrs", json::array({"clickable"})},
+                    {"children", json::array({
+                        json{
+                            {"class", "TextView"},
+                            {"text", "Lifted label"}
+                        }
+                    })}
+                }
+            })}
+        };
+
+        const auto default_grouped = loki_action::group_by_attrs_textual(ablation_root);
+        const auto default_toon = loki_action::build_runtime_toon_for_test(ablation_root, default_grouped);
+        assert_true(
+            default_toon.find("Visible title") != std::string::npos,
+            "default context should keep visible static text"
+        );
+        assert_true(
+            default_grouped.at("clickable")[0].at("text").get<std::string>() == "Lifted label",
+            "default grouping should lift descendant text into clickable label"
+        );
+
+        loki_action::context_flags hide_flags;
+        hide_flags.hide_non_clickable_text = true;
+        const auto hidden_grouped = loki_action::group_by_attrs_textual_with_flags(ablation_root, hide_flags);
+        const auto hidden_toon = loki_action::build_runtime_toon_for_test(ablation_root, hidden_grouped, hide_flags);
+        assert_true(
+            hidden_toon.find("Visible title") == std::string::npos,
+            "hideNonClickableText should remove static title from runtime context"
+        );
+        assert_true(
+            hidden_grouped.at("clickable")[0].find("text") == hidden_grouped.at("clickable")[0].end(),
+            "hideNonClickableText should remove lifted non-clickable descendant label"
+        );
+    }
+
+    {
+        const json metadata_tree = {
+            {"class", "EditText"},
+            {"id", "com.example:id/query"},
+            {"hintText", "Search contacts"},
+            {"inputType", "textPersonName"},
+            {"roleDescription", "input"},
+            {"stateDescription", "empty"},
+            {"error", "Required"},
+            {"textSizePx", 26.0},
+            {"textSizeUnit", 2},
+            {"layoutHeightPx", 88},
+            {"topRegion", true},
+            {"attrs", json::array({"clickable", "editable"})}
+        };
+        const auto default_grouped = loki_action::group_by_attrs_textual(metadata_tree);
+        const auto default_runtime = loki_action::build_runtime_toon_for_test(json::object(), default_grouped);
+        assert_true(default_runtime.find("size=xl") != std::string::npos, "default runtime TOON should include size marker");
+        assert_true(default_runtime.find("top") != std::string::npos, "default runtime TOON should include top marker");
+        assert_true(default_runtime.find("role=input;state=empty;type=textPersonName;error=Required") != std::string::npos,
+            "default runtime TOON should include full metadata");
+
+        loki_action::context_flags no_size_flags;
+        no_size_flags.drop_text_size = true;
+        const auto no_size_grouped = loki_action::group_by_attrs_textual_with_flags(metadata_tree, no_size_flags);
+        const auto no_size_runtime = loki_action::build_runtime_toon_for_test(json::object(), no_size_grouped, no_size_flags);
+        assert_true(no_size_runtime.find("size=") == std::string::npos, "dropTextSize should remove size markers");
+        assert_true(no_size_runtime.find("26.0px") == std::string::npos, "dropTextSize should remove raw size hints");
+
+        loki_action::context_flags no_role_flags;
+        no_role_flags.drop_role_and_state = true;
+        const auto no_role_grouped = loki_action::group_by_attrs_textual_with_flags(metadata_tree, no_role_flags);
+        const auto no_role_runtime = loki_action::build_runtime_toon_for_test(json::object(), no_role_grouped, no_role_flags);
+        assert_true(no_role_runtime.find("role=input") == std::string::npos, "dropRoleAndState should remove role");
+        assert_true(no_role_runtime.find("state=empty") == std::string::npos, "dropRoleAndState should remove state");
+        assert_true(no_role_runtime.find("hint=Search contacts") == std::string::npos, "dropRoleAndState should remove hint");
+        assert_true(no_role_runtime.find("error=Required") != std::string::npos, "dropRoleAndState should keep error");
+
+        loki_action::context_flags no_top_flags;
+        no_top_flags.drop_top_region = true;
+        const auto no_top_grouped = loki_action::group_by_attrs_textual_with_flags(metadata_tree, no_top_flags);
+        const auto no_top_runtime = loki_action::build_runtime_toon_for_test(json::object(), no_top_grouped, no_top_flags);
+        assert_true(no_top_runtime.find("top") == std::string::npos, "dropTopRegion should remove top marker");
+
+        loki_action::context_flags no_input_flags;
+        no_input_flags.drop_input_type = true;
+        const auto no_input_grouped = loki_action::group_by_attrs_textual_with_flags(metadata_tree, no_input_flags);
+        const auto no_input_runtime = loki_action::build_runtime_toon_for_test(json::object(), no_input_grouped, no_input_flags);
+        assert_true(no_input_runtime.find("type=textPersonName") == std::string::npos, "dropInputType should remove input type");
+    }
+
+    {
         const json list_done_grouped = {
             {"clickable", json::array({
                 json{
@@ -457,6 +620,18 @@ int main() {
         const auto accept_done =
             loki_action::validate_done_response_for_test(prominent_done_grouped, ctx.task, ctx, std::nullopt);
         assert_true(accept_done.accepted, "prominent top title should satisfy done");
+
+        loki_action::context_flags no_top_flags;
+        no_top_flags.drop_top_region = true;
+        const auto reject_without_top =
+            loki_action::validate_done_response_for_test(
+                prominent_done_grouped,
+                ctx.task,
+                ctx,
+                std::nullopt,
+                no_top_flags
+            );
+        assert_true(!reject_without_top.accepted, "dropTopRegion should weaken done prominence enough to reject");
     }
 
     {
@@ -481,6 +656,46 @@ int main() {
             ),
             "auto direct click should accept strong visible target present in static context"
         );
+    }
+
+    {
+        const json reduced_root = {
+            {"class", "FrameLayout"},
+            {"children", json::array({
+                json{
+                    {"class", "TextView"},
+                    {"text", "Screen title"},
+                    {"textSizePx", 30.0},
+                    {"topRegion", true}
+                },
+                json{
+                    {"class", "EditText"},
+                    {"hintText", "Search here"},
+                    {"inputType", "textPersonName"},
+                    {"roleDescription", "input"},
+                    {"stateDescription", "empty"},
+                    {"textSizePx", 22.0},
+                    {"topRegion", true},
+                    {"attrs", json::array({"clickable", "editable"})}
+                }
+            })}
+        };
+        const auto default_grouped = loki_action::group_by_attrs_textual(reduced_root);
+        const auto default_runtime = loki_action::build_runtime_toon_for_test(reduced_root, default_grouped);
+
+        loki_action::context_flags reduced_flags;
+        reduced_flags.hide_non_clickable_text = true;
+        reduced_flags.drop_text_size = true;
+        reduced_flags.drop_role_and_state = true;
+        reduced_flags.drop_top_region = true;
+        reduced_flags.drop_input_type = true;
+        const auto reduced_grouped = loki_action::group_by_attrs_textual_with_flags(reduced_root, reduced_flags);
+        const auto reduced_runtime = loki_action::build_runtime_toon_for_test(reduced_root, reduced_grouped, reduced_flags);
+
+        assert_true(default_runtime != reduced_runtime, "reduced flags should materially change runtime TOON");
+        assert_true(reduced_runtime.find("Screen title") == std::string::npos, "reduced runtime TOON should shrink static context");
+        assert_true(reduced_runtime.find("size=") == std::string::npos, "reduced runtime TOON should drop size markers");
+        assert_true(reduced_runtime.find("role=") == std::string::npos, "reduced runtime TOON should drop role metadata");
     }
 
     return 0;

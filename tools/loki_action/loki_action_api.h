@@ -52,6 +52,14 @@ LOKI_ACTION_API loki_action_result_t * loki_action_resolve_path(
     int32_t port
 );
 
+LOKI_ACTION_API loki_action_result_t * loki_action_resolve_path_with_flags(
+    const char * user_prompt,
+    const char * screen_json,
+    const char * host,
+    int32_t port,
+    const char * context_flags_json
+);
+
 LOKI_ACTION_API void loki_action_result_destroy(loki_action_result_t * result);
 
 LOKI_ACTION_API const char * loki_action_get_version(void);

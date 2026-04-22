@@ -45,6 +45,15 @@ struct extracted_steps_plan {
     std::vector<std::string> target_text_candidates;
 };
 
+struct context_flags {
+    bool hide_non_clickable_text = false;
+    bool drop_text_size = false;
+    bool drop_role_and_state = false;
+    bool drop_top_region = false;
+    bool drop_input_type = false;
+    int max_depth = 15;
+};
+
 struct done_validation_result {
     bool accepted = false;
     std::string reason = "no strong done signal";
@@ -52,11 +61,17 @@ struct done_validation_result {
 
 prompt_context parse_prompt_context(const std::string & raw_prompt);
 std::optional<extracted_steps_plan> parse_steps_extractor_content(const std::string & content);
+context_flags parse_context_flags_json_for_test(const std::string & raw_json);
 
 json group_by_attrs_textual(const json & tree);
+json group_by_attrs_textual_with_flags(const json & tree, const context_flags & flags);
 json prepare_for_toon(const json & grouped);
 std::string json_to_toon(const json & prepared);
-std::string build_runtime_toon_for_test(const json & root, const json & grouped);
+std::string build_runtime_toon_for_test(
+    const json & root,
+    const json & grouped,
+    const context_flags & flags = context_flags{}
+);
 std::string find_path_json_by_id(const json & grouped, int32_t selected_id);
 json filter_grouped_by_ids(const json & grouped, const std::vector<int32_t> & ids);
 bool prompt_requests_text_edit(const std::string & user_prompt);
@@ -84,7 +99,8 @@ done_validation_result validate_done_response_for_test(
     const json & grouped,
     const std::string & task,
     const prompt_context & context,
-    const std::optional<extracted_steps_plan> & plan
+    const std::optional<extracted_steps_plan> & plan,
+    const context_flags & flags = context_flags{}
 );
 
 }
