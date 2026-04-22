@@ -16,6 +16,7 @@ struct model_action_response {
     int32_t selected_id = -1;
     std::string action_type;
     std::optional<std::string> text;
+    int32_t text_index = -1;
     bool done = false;
 };
 
@@ -39,7 +40,14 @@ struct extracted_steps_plan {
     std::string goal;
     std::vector<std::string> apps;
     std::vector<std::string> steps;
+    std::vector<std::string> phase_hints;
     std::string done_when;
+    std::vector<std::string> target_text_candidates;
+};
+
+struct done_validation_result {
+    bool accepted = false;
+    std::string reason = "no strong done signal";
 };
 
 prompt_context parse_prompt_context(const std::string & raw_prompt);
@@ -48,19 +56,37 @@ std::optional<extracted_steps_plan> parse_steps_extractor_content(const std::str
 json group_by_attrs_textual(const json & tree);
 json prepare_for_toon(const json & grouped);
 std::string json_to_toon(const json & prepared);
+std::string build_runtime_toon_for_test(const json & root, const json & grouped);
 std::string find_path_json_by_id(const json & grouped, int32_t selected_id);
 json filter_grouped_by_ids(const json & grouped, const std::vector<int32_t> & ids);
 bool prompt_requests_text_edit(const std::string & user_prompt);
+std::vector<std::string> derive_text_candidates_for_test(
+    const std::string & task,
+    const std::optional<extracted_steps_plan> & extracted_plan
+);
+bool should_auto_accept_direct_click_for_test(
+    const json & grouped,
+    int32_t selected_id,
+    const std::vector<std::string> & task_terms,
+    const std::vector<std::string> & static_lines
+);
 std::string build_action_response_grammar(
     const std::vector<int32_t> & ids,
     const std::vector<int32_t> & editable_ids,
+    size_t text_candidate_count = 0,
     bool allow_click = true,
     bool allow_back = false,
     bool allow_done = true
 );
 model_action_response extract_action_response_from_chat_response(const std::string & response_body);
 void validate_action_response_for_grouped(const json & grouped, const model_action_response & response);
+done_validation_result validate_done_response_for_test(
+    const json & grouped,
+    const std::string & task,
+    const prompt_context & context,
+    const std::optional<extracted_steps_plan> & plan
+);
 
-} // namespace loki_action
+}
 
 #endif

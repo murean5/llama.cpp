@@ -1,5 +1,6 @@
 #include "../tools/loki_action/loki_action_internal.h"
 
+#include <algorithm>
 #include <fstream>
 #include <iostream>
 #include <stdexcept>
@@ -41,6 +42,11 @@ int main() {
 
     const auto grouped = loki_action::group_by_attrs_textual(input.at("root"));
     assert_equals(expected_grouped.dump(), grouped.dump(), "grouped JSON mismatch");
+    assert_equals(
+        "ComposeRowIcon:Shortcuts",
+        grouped.at("clickable")[0].at("resId").get<std::string>(),
+        "grouped clickable should include shortened resId"
+    );
 
     const auto prepared = loki_action::prepare_for_toon(grouped);
     const auto toon = loki_action::json_to_toon(prepared);
@@ -69,16 +75,38 @@ int main() {
         "plain navigation request should not be treated as text-edit intent"
     );
 
-    const auto grammar = loki_action::build_action_response_grammar({7, 12, 23}, {12}, true, false, true);
+    {
+        loki_action::extracted_steps_plan plan;
+        plan.goal = "Open contact with 'мама'";
+        plan.steps = {
+            "Open Contacts app",
+            "Open contact 'мама'"
+        };
+        const auto textCandidates =
+            loki_action::derive_text_candidates_for_test(u8"открой контакт мамы", plan);
+        assert_true(!textCandidates.empty(), "text candidates should not be empty");
+        assert_equals("мама", textCandidates.front(), "text candidates should prefer clean entity text");
+        assert_true(
+            std::find(textCandidates.begin(), textCandidates.end(), "contact 'мама'") == textCandidates.end(),
+            "instructional contact phrase should not leak into text candidates"
+        );
+        assert_true(
+            std::find(textCandidates.begin(), textCandidates.end(), "Open contact with 'мама'") == textCandidates.end(),
+            "raw goal should not leak into text candidates"
+        );
+    }
+
+    const auto grammar = loki_action::build_action_response_grammar({7, 12, 23}, {12}, 2, true, false, true);
     assert_true(grammar.find("done-response") != std::string::npos, "grammar should include done branch");
     assert_true(grammar.find("click-response") != std::string::npos, "grammar should include click branch");
     assert_true(grammar.find("set-text-response") != std::string::npos, "grammar should include set_text branch");
     assert_true(grammar.find("back-response") == std::string::npos, "grammar should not include back by default");
     assert_true(grammar.find(R"("7")") != std::string::npos, "grammar should include allowed ids");
     assert_true(grammar.find("set-text-id-value ::= \"12\"") != std::string::npos, "set_text ids should be limited to editable ids");
-    assert_true(grammar.find(R"("\"done\"")") != std::string::npos, "grammar should mention done");
+    assert_true(grammar.find("done-response ::= \"6\"") != std::string::npos, "grammar should use compact done");
+    assert_true(grammar.find("text-index-value ::= \"0\" | \"1\"") != std::string::npos, "grammar should enumerate text indexes");
 
-    const auto editable_grammar = loki_action::build_action_response_grammar({7, 12, 23}, {12}, false, false, false);
+    const auto editable_grammar = loki_action::build_action_response_grammar({7, 12, 23}, {12}, 2, false, false, false);
     assert_true(
         editable_grammar.find("click-response") == std::string::npos,
         "editable grammar should not include click branch"
@@ -88,24 +116,24 @@ int main() {
         "editable grammar should still include set_text branch"
     );
 
-    const auto click_only_grammar = loki_action::build_action_response_grammar({7, 12, 23}, {}, true, false, false);
+    const auto click_only_grammar = loki_action::build_action_response_grammar({7, 12, 23}, {}, 0, true, false, false);
     assert_true(
         click_only_grammar.find("set-text-response") == std::string::npos,
         "grammar without editable ids should not include set_text branch"
     );
 
-    const auto back_enabled_grammar = loki_action::build_action_response_grammar({7, 12, 23}, {12}, true, true, true);
+    const auto back_enabled_grammar = loki_action::build_action_response_grammar({7, 12, 23}, {12}, 2, true, true, true);
     assert_true(
         back_enabled_grammar.find("back-response") != std::string::npos,
         "grammar with allow_back should include back branch"
     );
     assert_true(
-        back_enabled_grammar.find(R"("\"action_type\"")") != std::string::npos,
-        "back grammar should use action_type field"
+        back_enabled_grammar.find("back-response ::= \"5\"") != std::string::npos,
+        "back grammar should use compact opcode"
     );
 
     const auto click_response = std::string(
-        R"({"choices":[{"message":{"content":"{\"id\":7,\"action\":\"click\"}"}}]})"
+        R"({"choices":[{"message":{"content":"1:7"}}]})"
     );
     const auto click_action = loki_action::extract_action_response_from_chat_response(click_response);
     assert_true(click_action.selected_id == 7, "click selected id mismatch");
@@ -114,13 +142,13 @@ int main() {
     assert_true(!click_action.done, "click action should not be done");
 
     const auto set_text_response = std::string(
-        R"({"choices":[{"message":{"content":"{\"id\":2,\"action\":\"set_text\",\"text\":\"котики\"}"}}]})"
+        R"({"choices":[{"message":{"content":"2:2:1"}}]})"
     );
     const auto set_text_action = loki_action::extract_action_response_from_chat_response(set_text_response);
     assert_true(set_text_action.selected_id == 2, "set_text selected id mismatch");
     assert_equals("set_text", set_text_action.action_type, "set_text action mismatch");
-    assert_true(set_text_action.text.has_value(), "set_text action should have text");
-    assert_equals("котики", *set_text_action.text, "set_text payload mismatch");
+    assert_true(!set_text_action.text.has_value(), "set_text compact action should not carry raw text");
+    assert_true(set_text_action.text_index == 1, "set_text text_index mismatch");
     assert_true(!set_text_action.done, "set_text action should not be done");
 
     const auto set_text_phrase_response = std::string(
@@ -141,7 +169,7 @@ int main() {
     assert_true(!click_done_false_action.done, "click done=false should stay false");
 
     const auto back_response = std::string(
-        R"({"choices":[{"message":{"content":"{\"action_type\":\"back\",\"done\":false}"}}]})"
+        R"({"choices":[{"message":{"content":"5"}}]})"
     );
     const auto back_action = loki_action::extract_action_response_from_chat_response(back_response);
     assert_true(back_action.selected_id == -1, "back selected id mismatch");
@@ -156,7 +184,7 @@ int main() {
     assert_true(legacy_back_action.selected_id == -1, "legacy back selected id mismatch");
     assert_equals("back", legacy_back_action.action_type, "legacy back action mismatch");
 
-    const auto done_response = std::string(R"({"choices":[{"message":{"content":"{\"done\":true}"}}]})");
+    const auto done_response = std::string(R"({"choices":[{"message":{"content":"6"}}]})");
     const auto done_action = loki_action::extract_action_response_from_chat_response(done_response);
     assert_true(done_action.done, "done response should set done=true");
     assert_true(done_action.selected_id == -1, "done response should not select id");
@@ -168,7 +196,7 @@ int main() {
     loki_action::validate_action_response_for_grouped(grouped, back_action);
     loki_action::validate_action_response_for_grouped(grouped, done_action);
 
-    const auto no_match_response = std::string(R"({"choices":[{"message":{"content":"{\"id\":-1}"}}]})");
+    const auto no_match_response = std::string(R"({"choices":[{"message":{"content":"0"}}]})");
     const auto no_match_action = loki_action::extract_action_response_from_chat_response(no_match_response);
     assert_true(no_match_action.selected_id == -1, "no match selected id mismatch");
     assert_true(no_match_action.action_type.empty(), "no match should not have action");
@@ -235,9 +263,18 @@ int main() {
     } catch (const std::exception &) {
         did_throw = true;
     }
-    assert_true(did_throw, "malformed json should throw");
+    assert_true(did_throw, "malformed JSON response should throw");
 
-    // parse_prompt_context: single action -- counts itself as 1
+    did_throw = false;
+    try {
+        (void) loki_action::extract_action_response_from_chat_response(
+            R"({"choices":[{"message":{"content":"2:7"}}]})"
+        );
+    } catch (const std::exception &) {
+        did_throw = true;
+    }
+    assert_true(did_throw, "malformed compact response should throw");
+
     {
         const auto ctx = loki_action::parse_prompt_context(
             "Task: find contact\nHistory (old->new): 1. click id=5 label='Contacts' app=contacts"
@@ -249,7 +286,6 @@ int main() {
         assert_equals("find contact", ctx.task, "task should be extracted");
     }
 
-    // parse_prompt_context: two identical actions -- indicates stuck (repeated_tail >= 2)
     {
         const auto ctx = loki_action::parse_prompt_context(
             "Task: find contact\nHistory (old->new): "
@@ -260,7 +296,6 @@ int main() {
         assert_true(ctx.repeated_tail_same_signature == 2, "repeated same_sig should be 2");
     }
 
-    // parse_prompt_context: three different clicks -- not stuck by id
     {
         const auto ctx = loki_action::parse_prompt_context(
             "Task: navigate\nHistory (old->new): "
@@ -272,21 +307,181 @@ int main() {
         assert_true(ctx.repeated_tail_clicks == 3, "three clicks counted correctly");
     }
 
-    // parse_steps_extractor_content: valid content
     {
         const auto plan = loki_action::parse_steps_extractor_content(
-            R"({"goal":"Open contacts and find Mom","apps":["contacts"],"steps":["click Contacts","set_text Mom"]})"
+            R"({"goal":"Open contacts and find Mom","apps":["contacts"],"steps":["click Contacts","set_text Mom"],"phase_hints":["Open contacts","Type Mom"]})"
         );
         assert_true(plan.has_value(), "valid extractor content should parse");
         assert_equals("Open contacts and find Mom", plan->goal, "plan goal mismatch");
         assert_true(plan->apps.size() == 1, "plan should have 1 app");
         assert_true(plan->steps.size() == 2, "plan should have 2 steps");
+        assert_true(plan->phase_hints.size() == 2, "plan should parse phase_hints");
     }
 
-    // parse_steps_extractor_content: invalid/empty content returns nullopt
     assert_true(!loki_action::parse_steps_extractor_content("").has_value(), "empty returns nullopt");
     assert_true(!loki_action::parse_steps_extractor_content("{}").has_value(), "empty obj returns nullopt");
     assert_true(!loki_action::parse_steps_extractor_content("not json").has_value(), "invalid json returns nullopt");
+
+    {
+        const json synthetic_tree = {
+            {"class", "EditText"},
+            {"id", "com.example:id/message_input"},
+            {"hintText", "Type message"},
+            {"inputType", "textEmailAddress"},
+            {"roleDescription", "input"},
+            {"stateDescription", "empty"},
+            {"error", "Required"},
+            {"textSizePx", 24.0},
+            {"textSizeUnit", 2},
+            {"layoutHeightPx", 96},
+            {"topRegion", true},
+            {"attrs", json::array({"editable", "clickable"})}
+        };
+        const auto synthetic_grouped = loki_action::group_by_attrs_textual(synthetic_tree);
+        const auto synthetic_prepared = loki_action::prepare_for_toon(synthetic_grouped);
+        const auto synthetic_toon = loki_action::json_to_toon(synthetic_prepared);
+        assert_true(
+            synthetic_grouped.at("editable")[0].at("resId").get<std::string>() == "message_input",
+            "synthetic grouped should include shortened resId"
+        );
+        assert_true(
+            synthetic_grouped.at("editable")[0].at("hint").get<std::string>() == "Type message",
+            "synthetic grouped should include hint"
+        );
+        assert_true(
+            synthetic_grouped.at("editable")[0].at("textSizePx").get<double>() == 24.0,
+            "synthetic grouped should preserve textSizePx"
+        );
+        assert_true(
+            synthetic_grouped.at("editable")[0].at("layoutHeightPx").get<int32_t>() == 96,
+            "synthetic grouped should preserve layoutHeightPx"
+        );
+        assert_true(
+            synthetic_grouped.at("editable")[0].at("topRegion").get<bool>(),
+            "synthetic grouped should preserve topRegion"
+        );
+        assert_true(
+            synthetic_toon.find("id | resId | role | state | error | inputType | hint | textSizePx | textSizeUnit | layoutHeightPx | topRegion") != std::string::npos,
+            "legacy TOON should use preferred metadata columns"
+        );
+        assert_true(
+            synthetic_toon.find("message_input") != std::string::npos &&
+            synthetic_toon.find("Type message") != std::string::npos,
+            "legacy TOON should include metadata values"
+        );
+
+        const auto runtime_toon = loki_action::build_runtime_toon_for_test(json::object(), synthetic_grouped);
+        assert_true(
+            runtime_toon.find("1) | top,size=xl | res=message_input | hint=Type message") != std::string::npos,
+            "runtime TOON should expose compact interactive prominence markers"
+        );
+        assert_true(
+            runtime_toon.find("message_input") != std::string::npos &&
+            runtime_toon.find("Type message") != std::string::npos,
+            "runtime TOON should include resId and hint"
+        );
+        assert_true(
+            runtime_toon.find("role=input;state=empty;type=textEmailAddress;error=Required") != std::string::npos &&
+            runtime_toon.find("attrs=clickable,editable") != std::string::npos,
+            "runtime TOON should compact metadata into meta column"
+        );
+    }
+
+    {
+        const json list_done_grouped = {
+            {"clickable", json::array({
+                json{
+                    {"id", 1},
+                    {"path", json::array({0, 0})},
+                    {"text", "Contact Mama"},
+                    {"topRegion", false},
+                    {"layoutHeightPx", 48}
+                }
+            })}
+        };
+        loki_action::prompt_context ctx;
+        ctx.task = "open contact mama";
+        ctx.history_tokens = {"c", "c"};
+        ctx.history_ids = {7, 8};
+
+        loki_action::extracted_steps_plan plan;
+        plan.steps = {"Open contacts", "Open contact Mama", "View contact details"};
+        const auto reject_done = loki_action::validate_done_response_for_test(list_done_grouped, ctx.task, ctx, plan);
+        assert_true(!reject_done.accepted, "done should respect plan-aware minimum history");
+        assert_true(
+            reject_done.reason.find("required=3") != std::string::npos,
+            "done rejection should mention required history"
+        );
+
+        ctx.history_tokens.push_back("c");
+        ctx.history_ids.push_back(9);
+        const auto still_reject_done =
+            loki_action::validate_done_response_for_test(list_done_grouped, ctx.task, ctx, plan);
+        assert_true(!still_reject_done.accepted, "list item should not satisfy done without prominence");
+
+        loki_action::prompt_context fallback_ctx;
+        fallback_ctx.task = "open contact mama";
+        fallback_ctx.history_tokens = {"c", "c"};
+        fallback_ctx.history_ids = {1, 2};
+        const auto fallback_done =
+            loki_action::validate_done_response_for_test(list_done_grouped, fallback_ctx.task, fallback_ctx, std::nullopt);
+        assert_true(!fallback_done.accepted, "list item should still fail baseline done check");
+    }
+
+    {
+        const json prominent_done_grouped = {
+            {"clickable", json::array({
+                json{
+                    {"id", 1},
+                    {"path", json::array({0, 0})},
+                    {"text", "Mama"},
+                    {"topRegion", true},
+                    {"textSizePx", 30.0},
+                    {"layoutHeightPx", 112}
+                },
+                json{
+                    {"id", 2},
+                    {"path", json::array({1, 0})},
+                    {"text", "Call"},
+                    {"topRegion", false},
+                    {"textSizePx", 16.0},
+                    {"layoutHeightPx", 44}
+                }
+            })}
+        };
+        loki_action::prompt_context ctx;
+        ctx.task = "open contact mama";
+        ctx.history_tokens = {"c", "c"};
+        ctx.history_ids = {7, 8};
+
+        const auto accept_done =
+            loki_action::validate_done_response_for_test(prominent_done_grouped, ctx.task, ctx, std::nullopt);
+        assert_true(accept_done.accepted, "prominent top title should satisfy done");
+    }
+
+    {
+        const json direct_grouped = {
+            {"clickable", json::array({
+                json{
+                    {"id", 8},
+                    {"path", json::array({0, 1})},
+                    {"text", "Мама"},
+                    {"topRegion", true},
+                    {"textSizePx", 28.0},
+                    {"layoutHeightPx", 100}
+                }
+            })}
+        };
+        assert_true(
+            loki_action::should_auto_accept_direct_click_for_test(
+                direct_grouped,
+                8,
+                {"мама"},
+                {"Мама | title,top,size=xl"}
+            ),
+            "auto direct click should accept strong visible target present in static context"
+        );
+    }
 
     return 0;
 }

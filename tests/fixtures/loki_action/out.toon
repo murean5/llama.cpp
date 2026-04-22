@@ -1,14 +1,14 @@
 clickable:
-  id | contentDesc | text
-  1 | Show attach content screen | 
-  2 |  | Text message
-  3 | Show attach emoji and stickers screen | 
-  4 | Show attach media screen | 
-  5 | Show record a voice message screen | 
-  6 | Back | 
-  7 |  | +7 985 174-42-80
-  8 | Call | 
-  9 | More | 
+  id | resId | text | contentDesc
+  1 | ComposeRowIcon:Shortcuts |  | Show attach content screen
+  2 |  | Text message | 
+  3 | ComposeRowIcon:Emotive |  | Show attach emoji and stickers screen
+  4 | ComposeRowIcon:Gallery |  | Show attach media screen
+  5 | Compose:Draft:Send |  | Show record a voice message screen
+  6 |  |  | Back
+  7 |  | +7 985 174-42-80 | 
+  8 |  |  | Call
+  9 |  |  | More
 editable:
   id | text
   2 | Text message
